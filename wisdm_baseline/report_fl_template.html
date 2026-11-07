@@ -82,11 +82,11 @@ function label(name) {
   if (name.startsWith("central-")) return `Centralised ${name.slice(8).toUpperCase()}`;
   const [model, strat, ...rest] = name.split("-");
   let s = `${model.toUpperCase()} · ${strat === "fedbn" ? "FedBN" : "FedAvg"}`;
-  for (const r of rest) s += r === "globalbn" ? " (global BN)" : r === "e3" ? " (E=3)" : r === "k1check" ? " (K=1 check)" : ` (${r})`;
+  for (const r of rest) s += r === "globalbn" ? " (global BN)" : r === "e3" ? " (E=3)" : r === "k1check" ? " (K=1 check)" : r === "r80" ? " (R=80)" : ` (${r})`;
   return s;
 }
-const color = name => PALETTE[name] || PALETTE[name.replace(/-(e3|k1check)/, "")] || "var(--c-test)";
-const dashed = name => name.includes("globalbn") || name.startsWith("central-");
+const color = name => PALETTE[name] || PALETTE[name.replace(/-(e3|k1check|r80)/, "")] || "var(--c-test)";
+const dashed = name => name.includes("globalbn") || name.startsWith("central-") || /-(e3|r80)/.test(name);
 const EXP_ORDER = Object.keys(E).sort((a, b) => {
   const k = x => [E[x].K === 5 ? 0 : E[x].K === 3 ? 1 : 2, E[x].split]; const [ka, kb] = [k(a), k(b)];
   return ka[0] - kb[0] || ka[1].localeCompare(kb[1]); });
@@ -94,7 +94,7 @@ const MAIN_EXPS = EXP_ORDER.filter(x => E[x].K > 1);
 const expLabel = x => `${E[x].split_name}, K=${E[x].K}`;
 const METHOD_ORDER = ["fcn-fedavg", "fcn-fedbn", "fcn-fedbn-globalbn", "lstm-fedavg"];
 const methodsOf = x => Object.keys(E[x].methods).sort((a, b) => {
-  const i = n => { const j = METHOD_ORDER.indexOf(n.replace(/-(e3|k1check)/, "")); return (j < 0 ? 9 : j) + (n.includes("-e3") ? 0.5 : 0); };
+  const i = n => { const j = METHOD_ORDER.indexOf(n.replace(/-(e3|k1check|r80)/, "")); return (j < 0 ? 9 : j) + (/-(e3|r80)/.test(n) ? 0.5 : 0); };
   return i(a) - i(b); });
 const centralFor = name => `central-${name.split("-")[0]}`;
 
@@ -232,7 +232,8 @@ card("central-lstm", CEN.lstm.test_f1, `± ${f3(CEN.lstm.test_f1.std)} · centra
 // ================================================================== main table
 add(el("h2", {}, "Results (mean ± std over 15 paired runs)"));
 add(el("p", { class: "note" }, "Δ = paired mean difference of test macro-F1 (same fold and seed), wins = runs where the first is better, p = Wilcoxon signed-rank, Holm-corrected within each experiment. Worst client / client std = per-client test macro-F1 over the K clients of a run, averaged over runs (centralised: the centralised model evaluated on the same client test users). MB to best = model traffic up to the selected round (FedBN: without BN layers). Δ worst vs FedAvg = paired difference of the worst-client F1 (Holm-corrected separately)."));
-const pcell = t => t ? `${sgn(t.mean_diff)} <span class="muted">(${t.wins}/${t.pairs}, p ${t.p_holm !== undefined ? f3(t.p_holm) : f3(t.p)})</span>` : "–";
+const fp = p => p < 0.001 ? "<0.001" : f3(p);
+const pcell = t => t ? `${sgn(t.mean_diff)} <span class="muted">(${t.wins}/${t.pairs}, p ${fp(t.p_holm !== undefined ? t.p_holm : t.p)})</span>` : "–";
 let rowsHtml = `<tr><th>Method</th><th>Val F1</th><th>Test F1</th><th>Δ vs centralised</th><th>Δ vs FedAvg</th><th>Test bal. acc.</th><th>Test acc.</th><th>Worst-client F1</th><th>Δ worst vs FedAvg</th><th>Client F1 std</th><th>Users &lt; 50 %</th><th>Best round</th><th>MB to best</th></tr>`;
 for (const x of EXP_ORDER) {
   const e = E[x], p = e.partition;

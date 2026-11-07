@@ -277,27 +277,25 @@ Outputs: `outputs/wisdm_fl/<split>_K<K>/<model>-<strategy>[-tag]/fold<f>/seed<s>
 
 ---
 
-## 11. Sanity checks (before the full matrix)
+## 11. Sanity checks (all passed)
 
-- [ ] Union of clients' train/val/test users = the fold's users; no user on two clients (S1, S2); users disjoint across splits within a fold.
-- [ ] Normalisation constants in the partitions equal the Stage 1 values of the fold.
-- [ ] **S0 + FedAvg with K = 1** reproduces the centralised result (within seed noise). This checks the whole pipeline.
-- [ ] FedBN: after round 2, client BN parameters differ between clients and equal each client's own last state; conv weights equal the global ones.
-- [ ] Summed client confusion matrices give the same macro-F1 as evaluating the pooled arrays directly.
-- [ ] The same seed gives the same metrics.
+- [x] Union of clients' train/val/test users = the fold's users; no user on two clients (S1, S2); every window on exactly one client (asserted in `make_fl_partitions.py`).
+- [x] Normalisation constants in the partitions equal the Stage 1 values of the fold (to 7 digits; both use the pooled training std with ddof = 1).
+- [x] **S0 + FedAvg with K = 1** reproduces the centralised result: test macro-F1 0.548 ± 0.031 vs. 0.539 ± 0.023 (Δ +0.010, 8/15, p = 0.19; job 294600).
+- [x] FedBN: at the selected round all 5 clients have distinct BN statistics in 100 % of the runs; under FedAvg they are identical.
+- [x] Summed client confusion matrices = direct evaluation of the saved global model on `test.npz` (identical matrices, smoke test).
+- [x] LSTM has no BN keys (FedBN not run).
+- [x] Stage 1 centralised models re-evaluated on the client test users: 1 window out of all test windows of 30 models differs (CPU vs. GPU rounding, |ΔF1| ≤ 0.0003).
 
----
+## 12. Hypotheses and outcomes
 
-## 12. Hypotheses (to be tested, not results)
-
-* H1: S0 and S1 FedAvg stay close to centralised: client label distributions are nearly identical
-  (JSD ≤ 0.03), and centralised training also mixes users.
-* H2: FedBN ≥ FedAvg on S1/S2 for **personalised** evaluation (local BN absorbs each site's orientation
-  statistics), but FedBN with global BN is ≤ FedAvg for new sites.
-* H3: The gap to centralised grows S0 < S1 < S2 < S3, mostly through rare classes (Stairs, LyingDown) and
-  the small S2 clients (worst-client F1).
-
----
+* H1 (S0/S1 FedAvg ≈ centralised): **confirmed**. |Δ| ≤ 0.006 for FCN, none significant.
+* H2 (FedBN ≥ FedAvg personalised; global BN ≤ FedAvg): **confirmed in direction, significant where the skew
+  is strongest**. Personalised FedBN beats FedAvg on S2 with K = 3 (+0.058 pooled macro-F1, 14/15, p_Holm = 0.004)
+  and doubles the worst client on S2 with K = 5 (+0.145, 10/15, p_Holm = 0.031). With global BN, FedBN is
+  indistinguishable from FedAvg in every setting, so the gain comes entirely from the local BN layers.
+* H3 (the gap grows S0 < S1 < S2 < S3): **partly**. The pooled gap is ~0 for S0–S2 and appears only for S3
+  (FedAvg −0.046, p_Holm = 0.021). Within S2 the damage shows up per client (worst client), not in the pooled metric.
 
 ## 13. Threats to validity
 
@@ -312,14 +310,68 @@ Outputs: `outputs/wisdm_fl/<split>_K<K>/<model>-<strategy>[-tag]/fold<f>/seed<s>
 
 ---
 
-## 14. Deliverables of this stage
+## 14. Results (fep, jobs 294600 / 294601 / 294602 / 294626, 360 runs)
 
-- [ ] `make_fl_partitions.py` + partitions, `meta.json` and label-distribution plots per split
-- [ ] Adapted Flower app (`fl_app/`) with FedAvg / FedBN, confusion-count evaluation and best-round selection
-- [ ] Smoke test passing §11 (including K = 1 ≈ centralised)
-- [ ] 135 primary runs (+ secondary) on fep, `outputs/wisdm_fl/`
-- [ ] Aggregated report: tables of §8.4, learning curves per round, confusion matrices, per-client fairness plots, communication cost
-- [ ] Discussion of RQ1–RQ4
+Interactive report: `outputs/wisdm_fl/report.html` (also `wisdm-results` canvas with `{"report": "federated"}`);
+numbers in `outputs/wisdm_fl/summary_fl.json`. Test macro-F1, mean ± std over 15 (fold, seed) pairs;
+Δ = paired difference to the centralised model of the same architecture (wins/15, Holm-corrected Wilcoxon p).
+Centralised: FCN 0.539 ± 0.023, LSTM 0.532 ± 0.035.
+
+**K = 5**
+
+| Split (JSD) | FCN FedAvg | FCN FedBN | FCN FedBN, global BN | LSTM FedAvg (R = 40) | LSTM FedAvg (R = 80) |
+|---|---|---|---|---|---|
+| S0 IID (0.000) | 0.536 (−0.003) | 0.531 (−0.008) | 0.537 (−0.002) | 0.522 (−0.010) | 0.531 (−0.000) |
+| S1 natural (0.011) | 0.545 (+0.006) | **0.554** (+0.015) | 0.542 (+0.003) | 0.503 (−0.029, p = 0.11) | 0.524 (−0.008) |
+| S2 user-Dirichlet (0.079) | 0.533 (−0.005) | 0.538 (−0.000) | 0.528 (−0.011) | 0.527 (−0.004) | 0.515 (−0.017) |
+| S3 window-Dirichlet (0.163) | **0.492 (−0.046, 2/15, p = 0.021)** | 0.524 (−0.014) | **0.489 (−0.049, 0/15, p < 0.001)** | 0.498 (−0.033) | – |
+
+**Fairness, S2 K = 5** (per-client test macro-F1 over the 5 clients of a run):
+
+| | Centralised FCN | FCN FedAvg | FCN FedBN | FCN FedBN, global BN |
+|---|---|---|---|---|
+| Worst client | 0.161 | 0.135 | **0.280** (+0.145 vs FedAvg, 10/15, p = 0.031) | 0.132 |
+| Client F1 std | 0.283 | 0.289 | **0.238** | 0.290 |
+
+**K = 3:** S1 – every method within ±0.015 of centralised. S2 – FedAvg 0.499 ± 0.082 (−0.039), FedBN
+**0.557 ± 0.037** (+0.018; **+0.058 vs FedAvg, 14/15, p = 0.004**), LSTM 0.491 (−0.040, n.s.).
+
+**Local epochs (S2, K = 5, E = 3 / R = 14):** no change (FedAvg 0.532, FedBN 0.545; FedBN vs FedAvg +0.013, n.s.).
+
+**Answers.**
+RQ1: with K = 5 and users kept on one site (S0–S2), federated training costs nothing measurable (FCN |Δ| ≤ 0.015,
+LSTM ≤ 0.017 with enough rounds). Losses appear with stronger skew: S2 with K = 3 (FedAvg −0.039, n.s., large
+variance) and S3 (FedAvg −0.046, significant).
+RQ2: personalised FedBN is the more robust choice. It is never significantly worse, it is significantly
+better in the two most skewed user-level settings (S2 K = 3 pooled, S2 K = 5 worst client), and it recovers most
+of the S3 loss (−0.014 vs. −0.046). A new site without its own BN statistics gains nothing (global BN ≈ FedAvg).
+RQ3: label skew has to be strong before the pooled metric moves. Moderate skew (S2) hurts individual
+sites first. RQ4: FedAvg leaves the small, skewed S2 sites behind (worst client 0.135, below even the
+centralised model's 0.161, median client 0.554); FedBN raises the worst client to 0.280 and lowers the spread across clients.
+
+**Other observations.**
+* The LSTM needs more rounds than the FCN: with R = 40 its best round was in the last 10 rounds in 33–60 % of
+  the runs. With R = 80 its gaps on S0/S1 shrink to −0.000/−0.008. Use R ≥ 80 for LSTM FL.
+* FCN's validation loss rises after ~10 rounds while macro-F1 stays flat, as in the centralised runs, so selecting
+  on macro-F1 matters.
+* The same two classes fail in every setting: LyingDown (F1 ≤ 0.22) and Stairs (F1 ≤ 0.16). The *type* of
+  LyingDown error changes with the skew. Centralised, S0–S2 K = 5 and personalised FedBN send ~90 % of LyingDown
+  windows to Sitting. Under strong skew (S2 K = 3, S3), FedAvg, global-BN FedBN and the LSTM send ~53 % of them to
+  **Standing** (only 36–40 % to Sitting), while personalised FedBN keeps the centralised pattern (66–87 % Sitting).
+  A plausible but untested explanation: with users' orientation statistics averaged together, the global model can
+  no longer separate the static postures by gravity direction and falls back on the sites' label mix.
+* Worst-client numbers in S2 come from tiny sites (2–3 test users). Some site/class combinations score 0 for every
+  method, including centralised.
+* Cost: ~50 s (FCN) / ~80 s (LSTM, R = 40) per run on one A100, ~10.7 MB of model traffic per round for K = 5.
+
+## 15. Deliverables of this stage
+
+- [x] `make_fl_partitions.py` + partitions, `meta.json` and label-distribution plots per split
+- [x] Flower app (`fl_app/`) with FedAvg / FedBN, confusion-count evaluation and best-round selection
+- [x] Sanity checks of §11 (including K = 1 ≈ centralised)
+- [x] 135 primary + 165 secondary + 15 sanity + 45 LSTM R = 80 runs on fep, `outputs/wisdm_fl/`
+- [x] Aggregated report: tables of §8.4, learning curves per round, confusion matrices, per-client fairness plots, communication cost
+- [x] Discussion of RQ1–RQ4 (§14)
 
 ## References
 
