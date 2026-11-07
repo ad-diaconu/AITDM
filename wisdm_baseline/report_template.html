@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WISDM centralised baseline: FCN vs LSTM</title>
+<style>
+  :root {
+    --bg: var(--background-color-default, #ffffff);
+    --fg: var(--text-color-default, #1f2328);
+    --muted: var(--text-color-muted, #59636e);
+    --border: var(--border-color-default, #d1d9e0);
+    --fcn: var(--true-color-blue, #0969da);
+    --lstm: var(--true-color-orange, #bc4c00);
+    --c-train: var(--true-color-purple, #8250df);
+    --c-val: var(--true-color-green, #1a7f37);
+    --c-test: var(--true-color-red, #cf222e);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-color-mode]) { --bg: #0d1117; --fg: #e6edf3; --muted: #9198a1; --border: #3d444d;
+      --fcn: #4493f8; --lstm: #f0883e; --c-train: #ab7df8; --c-val: #3fb950; --c-test: #f85149; }
+  }
+  body { margin: 0; padding: 20px 24px 40px; background: var(--bg); color: var(--fg);
+    font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+    font-size: var(--text-body-medium, 14px); line-height: var(--leading-body-medium, 20px); }
+  h1 { font-size: var(--text-title-large, 24px); line-height: 1.25; margin: 0 0 4px;
+    font-weight: var(--font-weight-semibold, 600); }
+  h2 { font-size: 17px; margin: 32px 0 6px; font-weight: var(--font-weight-semibold, 600);
+    border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+  h3 { font-size: 14px; margin: 8px 0 4px; font-weight: var(--font-weight-semibold, 600); }
+  .muted { color: var(--muted); }
+  .note { color: var(--muted); font-size: 12.5px; margin: 4px 0 10px; max-width: 980px; }
+  .cards { display: flex; gap: 12px; flex-wrap: wrap; margin: 16px 0 4px; }
+  .card { border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; min-width: 150px; }
+  .card .v { font-size: 22px; font-weight: 600; line-height: 28px; }
+  .card .l { color: var(--muted); font-size: 12px; }
+  table { border-collapse: collapse; font-size: 13px; margin: 6px 0; }
+  th, td { border-bottom: 1px solid var(--border); padding: 5px 10px; text-align: right; white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  th { font-weight: 600; color: var(--muted); }
+  .grid { display: flex; flex-wrap: wrap; gap: 18px; }
+  .panel { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin: 4px 0; }
+  .sw { display: inline-block; width: 12px; height: 3px; vertical-align: middle; margin-right: 5px; }
+  .controls { display: flex; gap: 14px; align-items: center; margin: 6px 0; font-size: 13px; }
+  select, button { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--border);
+    border-radius: 6px; padding: 2px 8px; }
+  svg text { fill: var(--fg); font-family: inherit; }
+  svg .axis { stroke: var(--border); }
+  svg .tick { fill: var(--muted); font-size: 11px; }
+  code { font-family: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace); font-size: 12px; }
+  details summary { cursor: pointer; color: var(--muted); margin: 6px 0; }
+  .tip { position: fixed; pointer-events: none; background: var(--bg); border: 1px solid var(--border);
+    border-radius: 6px; padding: 4px 8px; font-size: 12px; display: none; z-index: 9; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div class="tip" id="tip"></div>
+<script>
+const DATA = /*__DATA__*/null;
+const C = DATA.classes, MODELS = Object.keys(DATA.models);
+const NAME = { fcn: "FCN (Conv1D)", lstm: "LSTM" };
+const COLOR = m => `var(--${m})`;
+const f3 = x => x.toFixed(3), pm = s => `${f3(s.mean)} ± ${f3(s.std)}`;
+const el = (tag, attrs = {}, html = "") => { const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); e.innerHTML = html; return e; };
+const NS = "http://www.w3.org/2000/svg";
+const S = (tag, attrs = {}, text) => { const e = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); if (text !== undefined) e.textContent = text; return e; };
+const tip = document.getElementById("tip");
+const hover = (node, html) => { node.addEventListener("mousemove", ev => { tip.innerHTML = html;
+  tip.style.display = "block"; tip.style.left = ev.clientX + 12 + "px"; tip.style.top = ev.clientY + 12 + "px"; });
+  node.addEventListener("mouseleave", () => tip.style.display = "none"); };
+const app = document.getElementById("app");
+const add = (node, parent = app) => (parent.appendChild(node), node);
+
+function axes(svg, W, H, m, x0, x1, y0, y1, xlabel, ylabel, xticks, yticks) {
+  const X = v => m.l + (v - x0) / (x1 - x0) * (W - m.l - m.r);
+  const Y = v => H - m.b - (v - y0) / (y1 - y0) * (H - m.t - m.b);
+  svg.append(S("line", { x1: m.l, y1: H - m.b, x2: W - m.r, y2: H - m.b, class: "axis" }),
+             S("line", { x1: m.l, y1: m.t, x2: m.l, y2: H - m.b, class: "axis" }));
+  for (const t of xticks) svg.append(S("text", { x: X(t), y: H - m.b + 14, "text-anchor": "middle", class: "tick" }, t));
+  for (const t of yticks) { svg.append(S("text", { x: m.l - 5, y: Y(t) + 4, "text-anchor": "end", class: "tick" }, +t.toFixed(2)),
+    S("line", { x1: m.l, x2: W - m.r, y1: Y(t), y2: Y(t), class: "axis", "stroke-dasharray": "2 3", opacity: .5 })); }
+  if (xlabel) svg.append(S("text", { x: (m.l + W - m.r) / 2, y: H - 4, "text-anchor": "middle", class: "tick" }, xlabel));
+  if (ylabel) svg.append(S("text", { x: 12, y: (m.t + H - m.b) / 2, transform: `rotate(-90 12 ${(m.t + H - m.b) / 2})`,
+    "text-anchor": "middle", class: "tick" }, ylabel));
+  return [X, Y];
+}
+const ticks = (lo, hi, n) => { const s = (hi - lo) / n; return Array.from({ length: n + 1 }, (_, i) => lo + i * s); };
+
+function lineChart(series, { title, ylabel, ymin, ymax, vline, W = 470, H = 250 }) {
+  const svg = S("svg", { width: W, height: H });
+  const n = Math.max(...series.map(s => s.mean.length));
+  const m = { l: 46, r: 12, t: 22, b: 34 };
+  const [X, Y] = axes(svg, W, H, m, 1, n, ymin, ymax, "epoch", ylabel,
+    [1, ...ticks(0, n, 6).slice(1).map(Math.round)], ticks(ymin, ymax, 4));
+  svg.append(S("text", { x: m.l, y: 14, "font-weight": 600, "font-size": 13 }, title));
+  if (vline) { svg.append(S("line", { x1: X(vline), x2: X(vline), y1: m.t, y2: H - m.b, stroke: "var(--muted)", "stroke-dasharray": "4 3" }),
+    S("text", { x: X(vline) + 4, y: m.t + 10, class: "tick" }, "mean best epoch")); }
+  const clip = v => Math.max(ymin, Math.min(ymax, v));
+  for (const s of series) {
+    const up = s.mean.map((v, i) => `${X(i + 1)},${Y(clip(v + s.std[i]))}`);
+    const lo = s.mean.map((v, i) => `${X(i + 1)},${Y(clip(v - s.std[i]))}`).reverse();
+    svg.append(S("polygon", { points: up.concat(lo).join(" "), fill: s.color, opacity: .13 }));
+    svg.append(S("polyline", { points: s.mean.map((v, i) => `${X(i + 1)},${Y(clip(v))}`).join(" "),
+      fill: "none", stroke: s.color, "stroke-width": 2, "stroke-dasharray": s.dash || "" }));
+    s.mean.forEach((v, i) => { const c = S("circle", { cx: X(i + 1), cy: Y(clip(v)), r: 6, fill: "transparent" });
+      hover(c, `<b>${s.label}</b> · epoch ${i + 1}<br>${f3(v)} ± ${f3(s.std[i])} (n = ${s.n[i]} runs)`); svg.append(c); });
+  }
+  return svg;
+}
+
+function heatmap(cm, normalise, color, title) {
+  const k = cm.length, cell = 46, m = { l: 86, t: 30, b: 70, r: 8 };
+  const W = m.l + k * cell + m.r, H = m.t + k * cell + m.b, svg = S("svg", { width: W, height: H });
+  svg.append(S("text", { x: m.l, y: 16, "font-weight": 600, "font-size": 13 }, title));
+  const rows = cm.map(r => r.reduce((a, b) => a + b, 0));
+  for (let i = 0; i < k; i++) for (let j = 0; j < k; j++) {
+    const frac = rows[i] ? cm[i][j] / rows[i] : 0;
+    const g = S("g");
+    g.append(S("rect", { x: m.l + j * cell, y: m.t + i * cell, width: cell - 2, height: cell - 2, rx: 3,
+      fill: color, "fill-opacity": Math.max(.04, frac), stroke: i === j ? color : "none" }));
+    g.append(S("text", { x: m.l + j * cell + cell / 2 - 1, y: m.t + i * cell + cell / 2 + 4, "text-anchor": "middle",
+      "font-size": 11.5, "font-weight": i === j ? 600 : 400 }, normalise ? (frac * 100).toFixed(0) : cm[i][j]));
+    hover(g, `true <b>${C[i]}</b> → predicted <b>${C[j]}</b><br>${cm[i][j]} windows (${(frac * 100).toFixed(1)}% of row)`);
+    svg.append(g);
+  }
+  C.forEach((c, i) => { svg.append(S("text", { x: m.l - 6, y: m.t + i * cell + cell / 2 + 4, "text-anchor": "end", "font-size": 12 }, c));
+    const x = m.l + i * cell + cell / 2, y = m.t + k * cell + 6;
+    svg.append(S("text", { x, y, transform: `rotate(40 ${x} ${y})`, "font-size": 12 }, c)); });
+  svg.append(S("text", { x: 10, y: m.t + k * cell / 2, transform: `rotate(-90 10 ${m.t + k * cell / 2})`, "text-anchor": "middle", class: "tick" }, "true"));
+  svg.append(S("text", { x: m.l + k * cell / 2, y: H - 2, "text-anchor": "middle", class: "tick" }, "predicted"));
+  return svg;
+}
+
+function groupedBars(groups, { title, ylabel, W = 640, H = 260 }) {
+  const svg = S("svg", { width: W, height: H }), m = { l: 46, r: 10, t: 22, b: 34 };
+  const [, Y] = axes(svg, W, H, m, 0, 1, 0, 1, "", ylabel, [], ticks(0, 1, 5));
+  svg.append(S("text", { x: m.l, y: 14, "font-weight": 600, "font-size": 13 }, title));
+  const gw = (W - m.l - m.r) / groups.length, bw = (gw - 16) / MODELS.length;
+  groups.forEach((g, gi) => {
+    svg.append(S("text", { x: m.l + gi * gw + gw / 2, y: H - m.b + 15, "text-anchor": "middle", "font-size": 12 }, g.label));
+    MODELS.forEach((mdl, mi) => { const s = g.values[mdl], x = m.l + gi * gw + 8 + mi * bw;
+      const r = S("rect", { x, y: Y(s.mean), width: bw - 3, height: Y(0) - Y(s.mean), fill: COLOR(mdl), rx: 2 });
+      hover(r, `<b>${NAME[mdl]}</b> · ${g.label}<br>${pm(s)}`); svg.append(r);
+      const cx = x + (bw - 3) / 2;
+      svg.append(S("line", { x1: cx, x2: cx, y1: Y(Math.min(1, s.mean + s.std)), y2: Y(Math.max(0, s.mean - s.std)), stroke: "var(--fg)", "stroke-width": 1.2 })); });
+  });
+  return svg;
+}
+
+function foldDots({ W = 520, H = 250 }) {
+  const svg = S("svg", { width: W, height: H }), m = { l: 46, r: 10, t: 22, b: 34 };
+  const all = MODELS.flatMap(md => DATA.models[md].runs.map(r => r.test_f1));
+  const lo = Math.floor(Math.min(...all, DATA.majority.test_f1.mean) * 10) / 10, hi = Math.ceil(Math.max(...all) * 10) / 10;
+  const [, Y] = axes(svg, W, H, m, 0, 1, lo, hi, "", "test macro-F1", [], ticks(lo, hi, hi - lo > 0.45 ? 5 : 4));
+  svg.append(S("text", { x: m.l, y: 14, "font-weight": 600, "font-size": 13 }, "Test macro-F1 per fold (dots = seeds 1, 2, 3)"));
+  const folds = DATA.data.folds.length, gw = (W - m.l - m.r) / folds;
+  const yMaj = Y(DATA.majority.test_f1.mean);
+  svg.append(S("line", { x1: m.l, x2: W - m.r, y1: yMaj, y2: yMaj, stroke: "var(--muted)", "stroke-dasharray": "5 4" }),
+             S("text", { x: W - m.r - 4, y: yMaj - 5, "text-anchor": "end", class: "tick" }, `majority class (${f3(DATA.majority.test_f1.mean)})`));
+  for (let f = 0; f < folds; f++) {
+    svg.append(S("text", { x: m.l + f * gw + gw / 2, y: H - m.b + 15, "text-anchor": "middle", "font-size": 12 }, `fold ${f}`));
+    MODELS.forEach((mdl, mi) => DATA.models[mdl].runs.filter(r => r.fold === f).forEach((r, si) => {
+      const c = S("circle", { cx: m.l + f * gw + gw * (0.3 + 0.4 * mi) + (si - 1) * 6, cy: Y(r.test_f1), r: 4.5, fill: COLOR(mdl), "fill-opacity": .85 });
+      hover(c, `<b>${NAME[mdl]}</b> fold ${f} seed ${r.seed}<br>test F1 ${f3(r.test_f1)} · val F1 ${f3(r.val_f1)} · best epoch ${r.best_epoch}`);
+      svg.append(c); }));
+  }
+  return svg;
+}
+
+function histogram({ W = 520, H = 250, bins = 10 }) {
+  const svg = S("svg", { width: W, height: H }), m = { l: 46, r: 10, t: 22, b: 34 };
+  const counts = Object.fromEntries(MODELS.map(md => { const h = Array(bins).fill(0);
+    DATA.models[md].user_accuracy.forEach(a => h[Math.min(bins - 1, Math.floor(a * bins))]++);
+    const tot = DATA.models[md].user_accuracy.length; return [md, h.map(v => v / tot)]; }));
+  const ymax = Math.ceil(Math.max(...Object.values(counts).flat()) * 10) / 10;
+  const [X, Y] = axes(svg, W, H, m, 0, 1, 0, ymax, "per-user test accuracy", "share of users", ticks(0, 1, 5).map(v => +v.toFixed(1)), ticks(0, ymax, 4));
+  svg.append(S("text", { x: m.l, y: 14, "font-weight": 600, "font-size": 13 }, "Distribution of per-user test accuracy (all folds × seeds)"));
+  const bw = (X(1) - X(0)) / bins;
+  MODELS.forEach((md, mi) => counts[md].forEach((v, b) => { const r = S("rect", { x: X(b / bins) + 2 + mi * (bw - 4) / MODELS.length,
+    y: Y(v), width: (bw - 4) / MODELS.length, height: Y(0) - Y(v), fill: COLOR(md), "fill-opacity": .85 });
+    hover(r, `<b>${NAME[md]}</b><br>accuracy ${(b / bins).toFixed(1)}–${((b + 1) / bins).toFixed(1)}: ${(v * 100).toFixed(1)}% of user-runs`); svg.append(r); }));
+  return svg;
+}
+
+const legend = items => el("div", { class: "legend" }, items.map(([l, c, d]) =>
+  `<span><span class="sw" style="background:${c};${d ? "background:repeating-linear-gradient(90deg," + c + " 0 4px,transparent 4px 7px)" : ""}"></span>${l}</span>`).join(""));
+
+// ---------------------------------------------------------------- header
+const cmp = DATA.comparison, M = DATA.models, maj = DATA.majority;
+add(el("h1", {}, "WISDM Actitracker – centralised baseline"));
+add(el("div", { class: "muted" }, `FCN (Conv1D) vs. LSTM · raw 3-axis accelerometer, 10 s windows @ 20 Hz · 6 classes · subject-wise 5-fold CV × seeds 1, 2, 3 = ${M[MODELS[0]].runs.length} runs per model · trained on fep (${DATA.config.device.includes("cuda") ? "A100, dgxa100" : DATA.config.device})`));
+const cards = add(el("div", { class: "cards" }));
+MODELS.forEach(md => cards.append(el("div", { class: "card", style: `border-left:4px solid ${COLOR(md)}` },
+  `<div class="l">${NAME[md]} · test macro-F1</div><div class="v">${f3(M[md].metrics.test_f1.mean)}</div><div class="l">± ${f3(M[md].metrics.test_f1.std)} · acc ${f3(M[md].metrics.test_acc.mean)}</div>`)));
+if (cmp) cards.append(el("div", { class: "card" }, `<div class="l">FCN − LSTM (paired, ${cmp.pairs} runs)</div><div class="v">${cmp.mean_diff_fcn_minus_lstm >= 0 ? "+" : ""}${f3(cmp.mean_diff_fcn_minus_lstm)}</div><div class="l">Wilcoxon p = ${f3(cmp.wilcoxon_p)} · FCN better in ${cmp.fcn_better}/${cmp.pairs}</div>`));
+cards.append(el("div", { class: "card" }, `<div class="l">Majority class (${maj.class})</div><div class="v">${f3(maj.test_f1.mean)}</div><div class="l">macro-F1 · acc ${f3(maj.test_acc.mean)}</div>`));
+
+// ---------------------------------------------------------------- summary table
+add(el("h2", {}, "Summary (mean ± std over runs)"));
+const rows = [["Val macro-F1", "val_f1"], ["Test macro-F1", "test_f1"], ["Test balanced acc.", "test_bacc"], ["Test accuracy", "test_acc"],
+  ["Worst test user acc.", "test_worst_user_acc"], ["Median test user acc.", "test_median_user_acc"],
+  ["Share of test users < 50 % acc.", "test_users_below_50pct"], ["Best epoch (val)", "best_epoch"],
+  ["Epochs run (early stop)", "epochs_run"], ["Train time / run [s]", "train_seconds"]];
+const fmt = (k, s) => ["best_epoch", "epochs_run", "train_seconds"].includes(k) ? `${s.mean.toFixed(1)} ± ${s.std.toFixed(1)}` : pm(s);
+const majCell = k => ({ test_f1: f3(maj.test_f1.mean), test_acc: f3(maj.test_acc.mean), test_bacc: f3(maj.test_bacc.mean) }[k] || "–");
+add(el("table", {}, `<tr><th>Metric</th>${MODELS.map(md => `<th style="color:${COLOR(md)}">${NAME[md]}</th>`).join("")}<th>Majority class</th></tr>` +
+  rows.map(([l, k]) => `<tr><td>${l}</td>${MODELS.map(md => `<td>${fmt(k, M[md].metrics[k])}</td>`).join("")}<td>${majCell(k)}</td></tr>`).join("") +
+  `<tr><td>Parameters</td>${MODELS.map(md => `<td>${M[md].params.toLocaleString()}</td>`).join("")}<td>0</td></tr>`));
+add(el("p", { class: "note" }, "Model selection (checkpoint epoch, early stopping with patience " + DATA.config.patience + ") uses only the validation users. Test users are never seen during training or selection. Per-user numbers = accuracy over each test user's windows, averaged over runs. A worst user of 0 means at least one test user had every window wrong (typically a user with only LyingDown data, see the confusion matrices)."));
+
+// ---------------------------------------------------------------- curves
+add(el("h2", {}, "Learning curves"));
+add(el("p", { class: "note" }, "Mean over the runs still training at that epoch (hover for n); shaded band = ±1 std. Train loss is the running average over the epoch's mini-batches (dropout on); val/test loss are computed after the epoch in eval mode. Test curves are shown for diagnosis only. They were not used to choose anything."));
+add(legend([["train", "var(--c-train)"], ["validation", "var(--c-val)"], ["test", "var(--c-test)"]]));
+const cg = add(el("div", { class: "grid" }));
+const lossMax = Math.ceil(Math.max(...MODELS.flatMap(md => ["train_loss", "val_loss", "test_loss"].flatMap(k => M[md].curves[k].mean.map((v, i) => v + M[md].curves[k].std[i])))) * 2) / 2;
+MODELS.forEach(md => { const cv = M[md].curves, p = add(el("div", { class: "panel" }), cg);
+  p.append(el("h3", { style: `color:${COLOR(md)}` }, NAME[md]));
+  p.append(lineChart([{ label: "train loss", color: "var(--c-train)", ...cv.train_loss }, { label: "val loss", color: "var(--c-val)", ...cv.val_loss },
+    { label: "test loss", color: "var(--c-test)", ...cv.test_loss }], { title: "Cross-entropy loss", ylabel: "loss", ymin: 0, ymax: Math.min(lossMax, 3), vline: M[md].metrics.best_epoch.mean }));
+  p.append(lineChart([{ label: "train acc.", color: "var(--c-train)", dash: "5 3", ...cv.train_acc }, { label: "val macro-F1", color: "var(--c-val)", ...cv.val_f1 },
+    { label: "test macro-F1", color: "var(--c-test)", ...cv.test_f1 }], { title: "Macro-F1 (val, test) and train accuracy", ylabel: "score", ymin: 0, ymax: 1, vline: M[md].metrics.best_epoch.mean })); });
+
+// ---------------------------------------------------------------- confusion
+add(el("h2", {}, "Confusion matrices"));
+add(el("p", { class: "note" }, "Summed over all folds and seeds (every test user appears once per seed), best-validation checkpoint. Cells show the % of the true class (row) or raw window counts."));
+const ctl = add(el("div", { class: "controls" }, `<label>Split <select id="cmSplit"><option value="test">test</option><option value="val">validation</option></select></label>
+  <label>Show <select id="cmNorm"><option value="1">row %</option><option value="0">counts</option></select></label>`));
+const cmBox = add(el("div", { class: "grid" }));
+const drawCM = () => { cmBox.innerHTML = ""; const split = document.getElementById("cmSplit").value, norm = document.getElementById("cmNorm").value === "1";
+  MODELS.forEach(md => add(el("div", { class: "panel" }), cmBox).append(heatmap(M[md].confusion[split], norm, COLOR(md), `${NAME[md]} · ${split}`))); };
+ctl.addEventListener("change", drawCM); drawCM();
+
+// ---------------------------------------------------------------- per class
+add(el("h2", {}, "Per-class results (test)"));
+add(legend(MODELS.map(md => [NAME[md], COLOR(md)])));
+const pcg = add(el("div", { class: "grid" }));
+for (const metric of ["f1", "recall", "precision"])
+  add(el("div", { class: "panel" }), pcg).append(groupedBars(C.map(c => ({ label: c, values: Object.fromEntries(MODELS.map(md => [md, M[md].per_class.test[c][metric]])) })),
+    { title: `Per-class ${metric} (mean ± std over runs)`, ylabel: metric, W: 560, H: 240 }));
+const support = DATA.data.folds.reduce((a, f) => a.map((v, i) => v + f.test.per_class[i]), Array(C.length).fill(0));
+add(el("table", {}, `<tr><th>Class</th><th>Test windows (all folds)</th>${MODELS.map(md => `<th style="color:${COLOR(md)}">${NAME[md]} F1</th><th>recall</th>`).join("")}</tr>` +
+  C.map((c, i) => `<tr><td>${c}</td><td>${support[i]}</td>${MODELS.map(md => `<td>${pm(M[md].per_class.test[c].f1)}</td><td>${f3(M[md].per_class.test[c].recall.mean)}</td>`).join("")}</tr>`).join("")));
+
+// ---------------------------------------------------------------- folds / users
+add(el("h2", {}, "Variation across folds, seeds and users"));
+add(legend(MODELS.map(md => [NAME[md], COLOR(md)])));
+const vg = add(el("div", { class: "grid" }));
+add(el("div", { class: "panel" }), vg).append(foldDots({}));
+add(el("div", { class: "panel" }), vg).append(histogram({}));
+const det = add(el("details", {}, "<summary>All runs</summary>"));
+det.append(el("table", {}, `<tr><th>Model</th><th>Fold</th><th>Seed</th><th>Best epoch</th><th>Epochs run</th><th>Val F1</th><th>Test F1</th><th>Test bal. acc.</th><th>Test acc.</th></tr>` +
+  MODELS.flatMap(md => M[md].runs.map(r => `<tr><td style="color:${COLOR(md)}">${NAME[md]}</td><td>${r.fold}</td><td>${r.seed}</td><td>${r.best_epoch}</td><td>${r.epochs_run}</td><td>${f3(r.val_f1)}</td><td>${f3(r.test_f1)}</td><td>${f3(r.test_bacc)}</td><td>${f3(r.test_acc)}</td></tr>`)).join("")));
+
+// ---------------------------------------------------------------- data / protocol
+add(el("h2", {}, "Data and protocol"));
+const cl = DATA.data.cleaning, cfg = DATA.config, pr = DATA.data.params;
+add(el("table", {}, [["Raw rows", cl.rows_read], ["Empty rows removed", cl.C2_empty_rows], ["Exact duplicates removed", cl.C3_duplicate_rows],
+  ["Corrupt rows removed (|a| > 40 m/s² or bad timestamp)", cl.C4_corrupt_rows], ["Clean rows / users", `${cl.rows_clean} / ${cl.users_clean}`],
+  ["Windows (train stride " + pr.train_stride + ", eval stride " + pr.eval_stride + ")", DATA.data.n_windows],
+  ["Window", `${pr.window} samples = ${pr.window / 20} s, resampled to 20 Hz, segments split at gaps > ${pr.max_gap_ms} ms`],
+  ["Normalisation", "per-channel z-score, statistics of the fold's training windows"],
+  ["Optimiser", `Adam, lr ${cfg.lr}, batch ${cfg.batch_size}, grad-clip ${cfg.clip}, ≤ ${cfg.epochs} epochs, patience ${cfg.patience}`],
+  ["Software", `torch ${cfg.torch}, ${cfg.device}`]].map(([a, b]) => `<tr><td>${a}</td><td style="text-align:left">${b}</td></tr>`).join("")));
+add(el("table", {}, `<tr><th>Fold</th><th>Train windows / users</th><th>Val windows / users</th><th>Test windows / users</th></tr>` +
+  DATA.data.folds.map((f, i) => `<tr><td>${i}</td>${["train", "val", "test"].map(s => `<td>${f[s].windows} / ${f[s].users}</td>`).join("")}</tr>`).join("")));
+add(el("p", { class: "note" }, "Splits are subject-wise (StratifiedGroupKFold, seed " + pr.seed + "): train, validation and test users are disjoint, and every user is a test user exactly once. See docs/experiment_setup_centralised_baseline.md."));
+</script>
+</body>
+</html>
