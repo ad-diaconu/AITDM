@@ -1,0 +1,4 @@
+# Sanity checks before the full matrix (docs/experiment_setup_federated.md, section 11).
+# K = 1 + FedAvg = centralised training except that Adam restarts every round:
+# must be close to the Stage 1 centralised result of the same fold / seed.
+--split s0 --clients 1 --model fcn --strategy fedavg --rounds 30 --tag k1check

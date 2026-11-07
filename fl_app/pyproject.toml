@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "aitdm-fl-wisdm"
+version = "0.1.0"
+description = "WISDM federated learning (FedAvg / FedBN), adapted from AITDM_FLOWER_PROJECT_TUTORIAL/fl_app"
+requires-python = ">=3.11"
+dependencies = ["flwr[simulation]>=1.41.0", "torch>=2.4", "numpy"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["aitdm_fl"]
+
+[tool.flwr.app]
+publisher = "aitdm"
+
+[tool.flwr.app.components]
+serverapp = "aitdm_fl.server_app:app"
+clientapp = "aitdm_fl.client_app:app"
+
+[tool.flwr.app.config]
+# Used with `flwr run`. wisdm_baseline/run_fl.py passes the same keys through
+# $AITDM_FL_CONFIG_FILE instead (in-process simulation, one run per fold x seed).
+partitions-dir = ""        # ABSOLUTE path to data/partitions/wisdm/<split>_K<K>/fold<f>
+save-dir = ""
+model = "fcn"              # fcn | lstm
+strategy = "fedavg"        # fedavg | fedbn
+seed = 1
+num-server-rounds = 40
+local-epochs = 1
+learning-rate = 0.001
+batch-size = 64
+clip = 1.0
+patience = 10
