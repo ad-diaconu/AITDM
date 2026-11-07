@@ -1,0 +1,15 @@
+# Secondary FL experiments (docs/experiment_setup_federated.md, section 10)
+# S3: window-level Dirichlet (strong label skew, users spread over clients)
+--split s3 --clients 5 --model fcn --strategy fedavg
+--split s3 --clients 5 --model fcn --strategy fedbn
+--split s3 --clients 5 --model lstm --strategy fedavg
+# K = 3 sensitivity
+--split s1 --clients 3 --model fcn --strategy fedavg
+--split s1 --clients 3 --model fcn --strategy fedbn
+--split s1 --clients 3 --model lstm --strategy fedavg
+--split s2 --clients 3 --model fcn --strategy fedavg
+--split s2 --clients 3 --model fcn --strategy fedbn
+--split s2 --clients 3 --model lstm --strategy fedavg
+# Local epochs E = 3 with R = 14 (same ~40 passes over the data) on the main non-IID split
+--split s2 --clients 5 --model fcn --strategy fedavg --local-epochs 3 --rounds 14 --tag e3
+--split s2 --clients 5 --model fcn --strategy fedbn --local-epochs 3 --rounds 14 --tag e3

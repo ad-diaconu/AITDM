@@ -1,0 +1,11 @@
+# Primary FL matrix (docs/experiment_setup_federated.md, section 10): one line = one array task
+# = 5 folds x 3 seeds. LSTM has no BatchNorm, so FedBN is not run for it (identical to FedAvg).
+--split s0 --clients 5 --model fcn --strategy fedavg
+--split s0 --clients 5 --model fcn --strategy fedbn
+--split s0 --clients 5 --model lstm --strategy fedavg
+--split s1 --clients 5 --model fcn --strategy fedavg
+--split s1 --clients 5 --model fcn --strategy fedbn
+--split s1 --clients 5 --model lstm --strategy fedavg
+--split s2 --clients 5 --model fcn --strategy fedavg
+--split s2 --clients 5 --model fcn --strategy fedbn
+--split s2 --clients 5 --model lstm --strategy fedavg

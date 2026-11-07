@@ -1,0 +1,5 @@
+# Round-budget check: with R = 40, 33-60 % of the LSTM FedAvg runs had their best round in the
+# last 10 rounds (early stopping never triggered). R = 80 shows whether the budget limited them.
+--split s0 --clients 5 --model lstm --strategy fedavg --rounds 80 --tag r80
+--split s1 --clients 5 --model lstm --strategy fedavg --rounds 80 --tag r80
+--split s2 --clients 5 --model lstm --strategy fedavg --rounds 80 --tag r80

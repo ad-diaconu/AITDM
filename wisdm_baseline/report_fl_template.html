@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WISDM federated learning: FedAvg vs FedBN vs centralised</title>
+<style>
+  :root {
+    --bg: var(--background-color-default, #ffffff);
+    --fg: var(--text-color-default, #1f2328);
+    --muted: var(--text-color-muted, #59636e);
+    --border: var(--border-color-default, #d1d9e0);
+    --fcn: var(--true-color-blue, #0969da);
+    --lstm: var(--true-color-orange, #bc4c00);
+    --c-train: var(--true-color-purple, #8250df);
+    --c-val: var(--true-color-green, #1a7f37);
+    --c-test: var(--true-color-red, #cf222e);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-color-mode]) { --bg: #0d1117; --fg: #e6edf3; --muted: #9198a1; --border: #3d444d;
+      --fcn: #4493f8; --lstm: #f0883e; --c-train: #ab7df8; --c-val: #3fb950; --c-test: #f85149; }
+  }
+  body { margin: 0; padding: 20px 24px 40px; background: var(--bg); color: var(--fg);
+    font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+    font-size: var(--text-body-medium, 14px); line-height: var(--leading-body-medium, 20px); }
+  h1 { font-size: var(--text-title-large, 24px); line-height: 1.25; margin: 0 0 4px;
+    font-weight: var(--font-weight-semibold, 600); }
+  h2 { font-size: 17px; margin: 32px 0 6px; font-weight: var(--font-weight-semibold, 600);
+    border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+  h3 { font-size: 14px; margin: 8px 0 4px; font-weight: var(--font-weight-semibold, 600); }
+  .muted { color: var(--muted); }
+  .note { color: var(--muted); font-size: 12.5px; margin: 4px 0 10px; max-width: 980px; }
+  .cards { display: flex; gap: 12px; flex-wrap: wrap; margin: 16px 0 4px; }
+  .card { border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; min-width: 150px; }
+  .card .v { font-size: 22px; font-weight: 600; line-height: 28px; }
+  .card .l { color: var(--muted); font-size: 12px; }
+  table { border-collapse: collapse; font-size: 13px; margin: 6px 0; }
+  th, td { border-bottom: 1px solid var(--border); padding: 5px 10px; text-align: right; white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  th { font-weight: 600; color: var(--muted); }
+  .grid { display: flex; flex-wrap: wrap; gap: 18px; }
+  .panel { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin: 4px 0; }
+  .sw { display: inline-block; width: 12px; height: 3px; vertical-align: middle; margin-right: 5px; }
+  .controls { display: flex; gap: 14px; align-items: center; margin: 6px 0; font-size: 13px; }
+  select, button { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--border);
+    border-radius: 6px; padding: 2px 8px; }
+  svg text { fill: var(--fg); font-family: inherit; }
+  svg .axis { stroke: var(--border); }
+  svg .tick { fill: var(--muted); font-size: 11px; }
+  code { font-family: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace); font-size: 12px; }
+  details summary { cursor: pointer; color: var(--muted); margin: 6px 0; }
+  .tip { position: fixed; pointer-events: none; background: var(--bg); border: 1px solid var(--border);
+    border-radius: 6px; padding: 4px 8px; font-size: 12px; display: none; z-index: 9; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div class="tip" id="tip"></div>
+<script>
+const DATA = /*__DATA__*/null;
+const C = DATA.classes, E = DATA.experiments, CEN = DATA.central;
+const f3 = x => (x === undefined || x === null || Number.isNaN(x)) ? "–" : x.toFixed(3);
+const pm = s => s ? `${f3(s.mean)} ± ${f3(s.std)}` : "–";
+const sgn = x => (x >= 0 ? "+" : "") + f3(x);
+const el = (tag, attrs = {}, html = "") => { const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); e.innerHTML = html; return e; };
+const NS = "http://www.w3.org/2000/svg";
+const S = (tag, attrs = {}, text) => { const e = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); if (text !== undefined) e.textContent = text; return e; };
+const tip = document.getElementById("tip");
+const hover = (node, html) => { node.addEventListener("mousemove", ev => { tip.innerHTML = html;
+  tip.style.display = "block"; tip.style.left = ev.clientX + 12 + "px"; tip.style.top = ev.clientY + 12 + "px"; });
+  node.addEventListener("mouseleave", () => tip.style.display = "none"); };
+const app = document.getElementById("app");
+const add = (node, parent = app) => (parent.appendChild(node), node);
+
+// ------------------------------------------------------------------ methods: names and colours
+const PALETTE = { "central-fcn": "var(--muted)", "fcn-fedavg": "var(--fcn)", "fcn-fedbn": "var(--c-val)",
+  "fcn-fedbn-globalbn": "var(--c-train)", "central-lstm": "var(--fg)", "lstm-fedavg": "var(--lstm)" };
+function label(name) {
+  if (name.startsWith("central-")) return `Centralised ${name.slice(8).toUpperCase()}`;
+  const [model, strat, ...rest] = name.split("-");
+  let s = `${model.toUpperCase()} · ${strat === "fedbn" ? "FedBN" : "FedAvg"}`;
+  for (const r of rest) s += r === "globalbn" ? " (global BN)" : r === "e3" ? " (E=3)" : r === "k1check" ? " (K=1 check)" : r === "r80" ? " (R=80)" : ` (${r})`;
+  return s;
+}
+const color = name => PALETTE[name] || PALETTE[name.replace(/-(e3|k1check|r80)/, "")] || "var(--c-test)";
+const dashed = name => name.includes("globalbn") || name.startsWith("central-") || /-(e3|r80)/.test(name);
+const EXP_ORDER = Object.keys(E).sort((a, b) => {
+  const k = x => [E[x].K === 5 ? 0 : E[x].K === 3 ? 1 : 2, E[x].split]; const [ka, kb] = [k(a), k(b)];
+  return ka[0] - kb[0] || ka[1].localeCompare(kb[1]); });
+const MAIN_EXPS = EXP_ORDER.filter(x => E[x].K > 1);
+const expLabel = x => `${E[x].split_name}, K=${E[x].K}`;
+const METHOD_ORDER = ["fcn-fedavg", "fcn-fedbn", "fcn-fedbn-globalbn", "lstm-fedavg"];
+const methodsOf = x => Object.keys(E[x].methods).sort((a, b) => {
+  const i = n => { const j = METHOD_ORDER.indexOf(n.replace(/-(e3|k1check|r80)/, "")); return (j < 0 ? 9 : j) + (/-(e3|r80)/.test(n) ? 0.5 : 0); };
+  return i(a) - i(b); });
+const centralFor = name => `central-${name.split("-")[0]}`;
+
+// ------------------------------------------------------------------ chart helpers
+function axes(svg, W, H, m, x0, x1, y0, y1, xlabel, ylabel, xticks, yticks) {
+  const X = v => m.l + (v - x0) / (x1 - x0) * (W - m.l - m.r);
+  const Y = v => H - m.b - (v - y0) / (y1 - y0) * (H - m.t - m.b);
+  svg.append(S("line", { x1: m.l, y1: H - m.b, x2: W - m.r, y2: H - m.b, class: "axis" }),
+             S("line", { x1: m.l, y1: m.t, x2: m.l, y2: H - m.b, class: "axis" }));
+  for (const t of xticks) svg.append(S("text", { x: X(t), y: H - m.b + 14, "text-anchor": "middle", class: "tick" }, t));
+  for (const t of yticks) { svg.append(S("text", { x: m.l - 5, y: Y(t) + 4, "text-anchor": "end", class: "tick" }, +t.toFixed(2)),
+    S("line", { x1: m.l, x2: W - m.r, y1: Y(t), y2: Y(t), class: "axis", "stroke-dasharray": "2 3", opacity: .5 })); }
+  if (xlabel) svg.append(S("text", { x: (m.l + W - m.r) / 2, y: H - 4, "text-anchor": "middle", class: "tick" }, xlabel));
+  if (ylabel) svg.append(S("text", { x: 12, y: (m.t + H - m.b) / 2, transform: `rotate(-90 12 ${(m.t + H - m.b) / 2})`, "text-anchor": "middle", class: "tick" }, ylabel));
+  return [X, Y];
+}
+const ticks = (lo, hi, n) => { const s = (hi - lo) / n; return Array.from({ length: n + 1 }, (_, i) => lo + i * s); };
+const title = (svg, x, t) => svg.append(S("text", { x, y: 14, "font-weight": 600, "font-size": 13 }, t));
+
+function lineChart(series, { heading, ylabel, ymin, ymax, vline, hlines = [], W = 470, H = 250 }) {
+  const svg = S("svg", { width: W, height: H }), n = Math.max(...series.map(s => s.mean.length));
+  const m = { l: 46, r: 12, t: 22, b: 34 };
+  const [X, Y] = axes(svg, W, H, m, 1, n, ymin, ymax, "round", ylabel, [1, ...ticks(0, n, 4).slice(1).map(Math.round)], ticks(ymin, ymax, 4));
+  title(svg, m.l, heading);
+  const clip = v => Math.max(ymin, Math.min(ymax, v));
+  if (vline) svg.append(S("line", { x1: X(vline), x2: X(vline), y1: m.t, y2: H - m.b, stroke: "var(--muted)", "stroke-dasharray": "4 3" }),
+    S("text", { x: X(vline) + 4, y: m.t + 10, class: "tick" }, "mean best round"));
+  for (const h of hlines) { svg.append(S("line", { x1: m.l, x2: W - m.r, y1: Y(h.y), y2: Y(h.y), stroke: h.color, "stroke-dasharray": "6 4", opacity: .8 }),
+    S("text", { x: W - m.r - 4, y: Y(h.y) - 4, "text-anchor": "end", class: "tick" }, h.label)); }
+  for (const s of series) {
+    const up = s.mean.map((v, i) => `${X(i + 1)},${Y(clip(v + s.std[i]))}`), lo = s.mean.map((v, i) => `${X(i + 1)},${Y(clip(v - s.std[i]))}`).reverse();
+    svg.append(S("polygon", { points: up.concat(lo).join(" "), fill: s.color, opacity: .12 }));
+    svg.append(S("polyline", { points: s.mean.map((v, i) => `${X(i + 1)},${Y(clip(v))}`).join(" "), fill: "none", stroke: s.color, "stroke-width": 2, "stroke-dasharray": s.dash || "" }));
+    s.mean.forEach((v, i) => { const c = S("circle", { cx: X(i + 1), cy: Y(clip(v)), r: 5, fill: "transparent" });
+      hover(c, `<b>${s.label}</b> · round ${i + 1}<br>${f3(v)} ± ${f3(s.std[i])}`); svg.append(c); });
+  }
+  return svg;
+}
+
+function heatmap(cm, normalise, col, heading) {
+  const k = cm.length, cell = 40, m = { l: 80, t: 30, b: 66, r: 6 };
+  const W = m.l + k * cell + m.r, H = m.t + k * cell + m.b, svg = S("svg", { width: W, height: H });
+  title(svg, 4, heading);
+  const rows = cm.map(r => r.reduce((a, b) => a + b, 0));
+  for (let i = 0; i < k; i++) for (let j = 0; j < k; j++) {
+    const frac = rows[i] ? cm[i][j] / rows[i] : 0, g = S("g");
+    g.append(S("rect", { x: m.l + j * cell, y: m.t + i * cell, width: cell - 2, height: cell - 2, rx: 3, fill: col, "fill-opacity": Math.max(.04, frac), stroke: i === j ? col : "none" }));
+    g.append(S("text", { x: m.l + j * cell + cell / 2 - 1, y: m.t + i * cell + cell / 2 + 4, "text-anchor": "middle", "font-size": 11, "font-weight": i === j ? 600 : 400 },
+      normalise ? (frac * 100).toFixed(0) : cm[i][j]));
+    hover(g, `true <b>${C[i]}</b> → predicted <b>${C[j]}</b><br>${cm[i][j]} windows (${(frac * 100).toFixed(1)}% of row)`);
+    svg.append(g);
+  }
+  C.forEach((c, i) => { svg.append(S("text", { x: m.l - 5, y: m.t + i * cell + cell / 2 + 4, "text-anchor": "end", "font-size": 11.5 }, c));
+    const x = m.l + i * cell + cell / 2, y = m.t + k * cell + 6; svg.append(S("text", { x, y, transform: `rotate(40 ${x} ${y})`, "font-size": 11.5 }, c)); });
+  return svg;
+}
+
+function bars(groups, series, { heading, ylabel, ymin = 0, ymax = 1, W = 900, H = 270, refs = [] }) {
+  // groups: [{label, values: {series: {mean, std}}}], series: [names]
+  const svg = S("svg", { width: W, height: H }), m = { l: 46, r: 10, t: 22, b: 40 };
+  const [, Y] = axes(svg, W, H, m, 0, 1, ymin, ymax, "", ylabel, [], ticks(ymin, ymax, 5));
+  title(svg, m.l, heading);
+  const gw = (W - m.l - m.r) / groups.length, bw = (gw - 14) / series.length;
+  groups.forEach((g, gi) => {
+    const lines = g.label.split("\n");
+    lines.forEach((t, li) => svg.append(S("text", { x: m.l + gi * gw + gw / 2, y: H - m.b + 14 + li * 13, "text-anchor": "middle", "font-size": 11.5 }, t)));
+    series.forEach((sname, si) => { const s = g.values[sname]; if (!s) return;
+      const x = m.l + gi * gw + 7 + si * bw, v = Math.max(ymin, s.mean);
+      const r = S("rect", { x, y: Y(v), width: bw - 2, height: Y(ymin) - Y(v), fill: color(sname), "fill-opacity": dashed(sname) ? .45 : .9, rx: 2,
+        stroke: color(sname), "stroke-dasharray": dashed(sname) ? "3 2" : "" });
+      hover(r, `<b>${label(sname)}</b> · ${g.label.replace("\n", " ")}<br>${pm(s)}`); svg.append(r);
+      const cx = x + (bw - 2) / 2; svg.append(S("line", { x1: cx, x2: cx, y1: Y(Math.min(ymax, s.mean + s.std)), y2: Y(Math.max(ymin, s.mean - s.std)), stroke: "var(--fg)", "stroke-width": 1.1 })); });
+  });
+  return svg;
+}
+
+function strip(groups, { heading, W = 980, H = 280 }) {
+  // groups: [{name, values: [f1], sizes: [users]}]
+  const svg = S("svg", { width: W, height: H }), m = { l: 46, r: 10, t: 22, b: 58 };
+  const [, Y] = axes(svg, W, H, m, 0, 1, 0, 1, "", "client test macro-F1", [], ticks(0, 1, 5));
+  title(svg, m.l, heading);
+  const gw = (W - m.l - m.r) / groups.length;
+  groups.forEach((g, gi) => {
+    const cx = m.l + gi * gw + gw / 2;
+    label(g.name).replace(" (", " · (").split(" · ").forEach((t, li) => svg.append(S("text", { x: cx, y: H - m.b + 13 + li * 12, "text-anchor": "middle", "font-size": 10.5 }, t)));
+    g.values.forEach((v, i) => { const jitter = ((i * 37) % 23 - 11) / 11 * gw * 0.28;
+      const c = S("circle", { cx: cx + jitter, cy: Y(v), r: Math.min(7, 2 + Math.sqrt(g.sizes[i] || 1)), fill: color(g.name), "fill-opacity": .45 });
+      hover(c, `<b>${label(g.name)}</b><br>client F1 ${f3(v)} · ${g.sizes[i]} test users`); svg.append(c); });
+    const sorted = [...g.values].sort((a, b) => a - b), med = sorted[Math.floor(sorted.length / 2)];
+    svg.append(S("line", { x1: cx - gw * .35, x2: cx + gw * .35, y1: Y(med), y2: Y(med), stroke: "var(--fg)", "stroke-width": 2 }));
+  });
+  return svg;
+}
+
+function stacked(clients, { heading, W = 520, H = 250 }) {
+  const svg = S("svg", { width: W, height: H }), m = { l: 46, r: 110, t: 22, b: 36 };
+  const [, Y] = axes(svg, W, H, m, 0, 1, 0, 1, "client (fold 0)", "share of training windows", [], ticks(0, 1, 4));
+  title(svg, m.l, heading);
+  const cols = ["var(--fcn)", "var(--lstm)", "var(--c-test)", "var(--c-val)", "var(--c-train)", "var(--muted)"];
+  const bw = (W - m.l - m.r) / clients.length;
+  clients.forEach((c, i) => { let acc = 0;
+    c.share.forEach((s, j) => { const r = S("rect", { x: m.l + i * bw + 6, y: Y(acc + s), width: bw - 12, height: Y(acc) - Y(acc + s), fill: cols[j] });
+      hover(r, `client ${i} · <b>${C[j]}</b>: ${(s * 100).toFixed(1)}%<br>${c.train_windows} windows, ${c.train_users} users`); svg.append(r); acc += s; });
+    svg.append(S("text", { x: m.l + i * bw + bw / 2, y: H - m.b + 14, "text-anchor": "middle", class: "tick" }, `${i} (${c.train_users}u)`)); });
+  C.forEach((c, j) => { svg.append(S("rect", { x: W - m.r + 10, y: m.t + j * 18, width: 10, height: 10, fill: cols[j] }),
+    S("text", { x: W - m.r + 25, y: m.t + j * 18 + 9, "font-size": 11.5 }, c)); });
+  return svg;
+}
+const legend = names => el("div", { class: "legend" }, names.map(n =>
+  `<span><span class="sw" style="background:${color(n)};${dashed(n) ? "opacity:.6" : ""}"></span>${label(n)}</span>`).join(""));
+const selectEl = (id, opts, lab) => `<label>${lab} <select id="${id}">${opts.map(([v, t]) => `<option value="${v}">${t}</option>`).join("")}</select></label>`;
+const expSelect = (id, exps = MAIN_EXPS) => selectEl(id, exps.map(x => [x, expLabel(x)]), "Experiment");
+const centralAsMethod = (x, model) => ({ metrics: { ...CEN[model], ...(E[x].central ? { worst_client_f1: E[x].central[model].worst_client_f1, client_f1_std: E[x].central[model].client_f1_std } : {}) },
+  per_class: CEN[model].per_class, confusion: CEN[model].confusion, confusion_val: CEN[model].confusion_val,
+  client_f1: E[x].central ? E[x].central[model].client_f1 : [], client_users: E[x].central ? E[x].central[model].client_users : [] });
+const withCentral = x => { const ms = methodsOf(x); const out = {};
+  if (ms.some(m => m.startsWith("fcn"))) out["central-fcn"] = centralAsMethod(x, "fcn");
+  ms.filter(m => m.startsWith("fcn")).forEach(m => out[m] = E[x].methods[m]);
+  if (ms.some(m => m.startsWith("lstm"))) out["central-lstm"] = centralAsMethod(x, "lstm");
+  ms.filter(m => m.startsWith("lstm")).forEach(m => out[m] = E[x].methods[m]);
+  return out; };
+
+// ================================================================== header
+const mainExp = E["s2_K5"] ? "s2_K5" : MAIN_EXPS[0];
+add(el("h1", {}, "WISDM Actitracker – federated learning (FedAvg, FedBN) vs. centralised"));
+add(el("div", { class: "muted" }, `Same data, folds, test users, models and optimiser as the centralised baseline · Flower 1.41 simulation on fep (A100) · subject-wise 5-fold CV × seeds 1, 2, 3 = 15 paired runs per method · ${Object.values(E).reduce((a, e) => a + Object.entries(e.methods).filter(([n]) => !n.includes("globalbn")).reduce((b, [, m]) => b + m.runs, 0), 0)} federated runs`));
+const cards = add(el("div", { class: "cards" }));
+const card = (name, s, sub) => cards.append(el("div", { class: "card", style: `border-left:4px solid ${color(name)}` },
+  `<div class="l">${label(name)} · test macro-F1</div><div class="v">${f3(s.mean)}</div><div class="l">${sub}</div>`));
+card("central-fcn", CEN.fcn.test_f1, `± ${f3(CEN.fcn.test_f1.std)} · centralised`);
+for (const m of ["fcn-fedavg", "fcn-fedbn", "lstm-fedavg"]) { const s = E[mainExp] && E[mainExp].methods[m]; if (!s) continue;
+  card(m, s.metrics.test_f1, `${expLabel(mainExp)} · Δ ${sgn(s.vs_central.mean_diff)} vs centralised`); }
+card("central-lstm", CEN.lstm.test_f1, `± ${f3(CEN.lstm.test_f1.std)} · centralised`);
+
+// ================================================================== main table
+add(el("h2", {}, "Results (mean ± std over 15 paired runs)"));
+add(el("p", { class: "note" }, "Δ = paired mean difference of test macro-F1 (same fold and seed), wins = runs where the first is better, p = Wilcoxon signed-rank, Holm-corrected within each experiment. Worst client / client std = per-client test macro-F1 over the K clients of a run, averaged over runs (centralised: the centralised model evaluated on the same client test users). MB to best = model traffic up to the selected round (FedBN: without BN layers). Δ worst vs FedAvg = paired difference of the worst-client F1 (Holm-corrected separately)."));
+const fp = p => p < 0.001 ? "<0.001" : f3(p);
+const pcell = t => t ? `${sgn(t.mean_diff)} <span class="muted">(${t.wins}/${t.pairs}, p ${fp(t.p_holm !== undefined ? t.p_holm : t.p)})</span>` : "–";
+let rowsHtml = `<tr><th>Method</th><th>Val F1</th><th>Test F1</th><th>Δ vs centralised</th><th>Δ vs FedAvg</th><th>Test bal. acc.</th><th>Test acc.</th><th>Worst-client F1</th><th>Δ worst vs FedAvg</th><th>Client F1 std</th><th>Users &lt; 50 %</th><th>Best round</th><th>MB to best</th></tr>`;
+for (const x of EXP_ORDER) {
+  const e = E[x], p = e.partition;
+  rowsHtml += `<tr><td colspan="13" style="text-align:left;padding-top:12px"><b>${expLabel(x)}</b> <span class="muted">· JSD ${f3(p.jsd_mean.mean)} (max ${f3(p.jsd_max)}) · client size CV ${f3(p.size_cv.mean)}</span></td></tr>`;
+  for (const [name, s] of Object.entries(withCentral(x))) {
+    const mt = s.metrics, cen = name.startsWith("central-");
+    rowsHtml += `<tr><td style="color:${color(name)}">${label(name)}</td><td>${pm(mt.val_f1)}</td><td><b>${pm(mt.test_f1)}</b></td><td>${cen ? "–" : pcell(s.vs_central)}</td><td>${pcell(s.vs_fedavg)}</td>
+      <td>${pm(mt.test_bacc)}</td><td>${pm(mt.test_acc)}</td><td>${mt.worst_client_f1 ? f3(mt.worst_client_f1.mean) : "–"}</td><td>${pcell(s.vs_fedavg_worst)}</td><td>${mt.client_f1_std ? f3(mt.client_f1_std.mean) : "–"}</td>
+      <td>${mt.users_below_50 ? (mt.users_below_50.mean * 100).toFixed(1) + " %" : "–"}</td><td>${cen ? `ep ${mt.best_epoch.mean.toFixed(1)}` : mt.best_round.mean.toFixed(1) + (s.hit_round_limit ? ` <span class="muted" title="share of runs whose best round was within the last ${10} rounds, so early stopping never triggered">(${(s.hit_round_limit * 100).toFixed(0)} % at limit)</span>` : "")}</td><td>${cen ? "0" : mt.mb_to_best.mean.toFixed(0)}</td></tr>`;
+  }
+}
+add(el("div", { style: "overflow-x:auto" }, `<table>${rowsHtml}</table>`));
+
+// ================================================================== overview bars
+add(el("h2", {}, "Overview: test macro-F1 by split"));
+const OV = ["central-fcn", "fcn-fedavg", "fcn-fedbn", "fcn-fedbn-globalbn", "central-lstm", "lstm-fedavg"];
+add(legend(OV));
+const ovBox = add(el("div", { class: "grid" }));
+for (const K of [5, 3]) { const xs = MAIN_EXPS.filter(x => E[x].K === K); if (!xs.length) continue;
+  const groups = xs.map(x => { const wc = withCentral(x); return { label: `${E[x].split_name.split(" ").slice(0, 2).join(" ")}\nJSD ${f3(E[x].partition.jsd_mean.mean)}`,
+    values: Object.fromEntries(OV.filter(n => wc[n]).map(n => [n, wc[n].metrics.test_f1])) }; });
+  add(el("div", { class: "panel" }), ovBox).append(bars(groups, OV, { heading: `K = ${K} clients`, ylabel: "test macro-F1", ymin: 0.3, ymax: 0.8, W: Math.max(380, 150 + 190 * xs.length) })); }
+
+// ================================================================== curves
+add(el("h2", {}, "Learning curves per round"));
+add(el("p", { class: "note" }, "Mean ± std over the 15 runs. Train loss = client-size-weighted mean of the local training losses (dropout on). Validation/test loss and macro-F1 come from the summed client confusion counts of the model after aggregation. FedBN: personalised = global weights + the client's own BN layers. Global BN = the averaged BN layers (a new site). The dashed horizontal line is the centralised test macro-F1. Test curves are for diagnosis only."));
+const cvCtl = add(el("div", { class: "controls" }, expSelect("cvExp", EXP_ORDER)));
+const cvBox = add(el("div", { class: "grid" }));
+const drawCurves = () => { cvBox.innerHTML = ""; const x = document.getElementById("cvExp").value;
+  for (const name of methodsOf(x).filter(n => !n.includes("globalbn"))) {
+    const s = E[x].methods[name], cv = s.curves, p = add(el("div", { class: "panel" }), cvBox);
+    p.append(el("h3", { style: `color:${color(name)}` }, label(name)));
+    const lossMax = Math.min(3, Math.ceil(Math.max(...["train_loss", "val_loss", "test_loss"].flatMap(k => cv[k].mean.map((v, i) => v + cv[k].std[i]))) * 2) / 2);
+    p.append(lineChart([{ label: "train loss", color: "var(--c-train)", ...cv.train_loss }, { label: "val loss", color: "var(--c-val)", ...cv.val_loss },
+      { label: "test loss", color: "var(--c-test)", ...cv.test_loss }], { heading: "Cross-entropy loss", ylabel: "loss", ymin: 0, ymax: lossMax, vline: s.metrics.best_round.mean }));
+    const f1 = [{ label: "val macro-F1", color: "var(--c-val)", ...cv.val_f1 }, { label: "test macro-F1", color: "var(--c-test)", ...cv.test_f1 }];
+    if (cv.gtest_f1) f1.push({ label: "val F1 (global BN)", color: "var(--c-val)", dash: "4 3", ...cv.gval_f1 }, { label: "test F1 (global BN)", color: "var(--c-test)", dash: "4 3", ...cv.gtest_f1 });
+    p.append(lineChart(f1, { heading: "Macro-F1" + (cv.gtest_f1 ? " (dashed: global BN)" : ""), ylabel: "macro-F1", ymin: 0, ymax: 0.8, vline: s.metrics.best_round.mean,
+      hlines: [{ y: CEN[s.model].test_f1.mean, color: "var(--muted)", label: `centralised ${s.model.toUpperCase()} test` }] }));
+  } };
+cvCtl.addEventListener("change", drawCurves); drawCurves();
+
+// ================================================================== confusion
+add(el("h2", {}, "Confusion matrices"));
+add(el("p", { class: "note" }, "Summed over folds and seeds at the selected round (centralised: best-validation epoch). Every test user is counted once per seed in every column."));
+const cmCtl = add(el("div", { class: "controls" }, expSelect("cmExp") + selectEl("cmSplit", [["test", "test"], ["val", "validation"]], "Split") + selectEl("cmNorm", [["1", "row %"], ["0", "counts"]], "Show")));
+const cmBox = add(el("div", { class: "grid" }));
+const drawCM = () => { cmBox.innerHTML = ""; const x = document.getElementById("cmExp").value, sp = document.getElementById("cmSplit").value, norm = document.getElementById("cmNorm").value === "1";
+  for (const [name, s] of Object.entries(withCentral(x))) add(el("div", { class: "panel" }), cmBox).append(heatmap(sp === "test" ? s.confusion : s.confusion_val, norm, color(name), label(name))); };
+cmCtl.addEventListener("change", drawCM); drawCM();
+
+// ================================================================== per class
+add(el("h2", {}, "Per-class test F1"));
+const pcCtl = add(el("div", { class: "controls" }, expSelect("pcExp")));
+const pcBox = add(el("div", {}));
+const drawPC = () => { pcBox.innerHTML = ""; const x = document.getElementById("pcExp").value, wc = withCentral(x), names = Object.keys(wc);
+  pcBox.append(legend(names));
+  pcBox.append(bars(C.map(c => ({ label: c, values: Object.fromEntries(names.map(n => [n, wc[n].per_class[c]])) })), names, { heading: `Per-class F1 · ${expLabel(x)}`, ylabel: "F1", W: 980 })); };
+pcCtl.addEventListener("change", drawPC); drawPC();
+
+// ================================================================== fairness
+add(el("h2", {}, "Fairness across clients"));
+add(el("p", { class: "note" }, "Every dot is one client in one run (5 folds × 3 seeds × K clients). The dot size grows with the client's number of test users, and the bar marks the median. The centralised models are evaluated on the same client test users."));
+const fCtl = add(el("div", { class: "controls" }, expSelect("fExp")));
+const fBox = add(el("div", { class: "panel" }));
+const drawF = () => { fBox.innerHTML = ""; const x = document.getElementById("fExp").value, wc = withCentral(x);
+  fBox.append(strip(Object.entries(wc).map(([n, s]) => ({ name: n, values: s.client_f1, sizes: s.client_users })), { heading: `Per-client test macro-F1 · ${expLabel(x)}` })); };
+fCtl.addEventListener("change", drawF); drawF();
+
+// ================================================================== partitions
+add(el("h2", {}, "Client data (non-IID splits)"));
+add(el("p", { class: "note" }, "Label shares of each client's training windows in fold 0 (hover for details). JSD = Jensen–Shannon divergence (base 2) between a client's label distribution and the pooled one, averaged over clients and folds. S1/S2 keep every user on one client, so the per-user feature shift (phone orientation) stays on that client. S0/S3 spread a user's training windows over clients."));
+const pBox = add(el("div", { class: "grid" }));
+for (const x of EXP_ORDER.filter(x => E[x].K > 1)) { const p = E[x].partition;
+  add(el("div", { class: "panel" }), pBox).append(stacked(p.fold0, { heading: `${expLabel(x)} · JSD ${f3(p.jsd_mean.mean)}`, W: 300 + 40 * p.fold0.length })); }
+add(el("table", {}, `<tr><th>Experiment</th><th>JSD mean ± std (folds)</th><th>JSD max</th><th>Client size CV</th><th>Missing classes / client</th><th>Fold 0: train windows per client</th><th>train / val / test users per client</th></tr>` +
+  EXP_ORDER.map(x => { const p = E[x].partition; return `<tr><td>${expLabel(x)}</td><td>${pm(p.jsd_mean)}</td><td>${f3(p.jsd_max)}</td><td>${f3(p.size_cv.mean)}</td><td>${p.missing_classes.mean.toFixed(2)}</td>
+  <td>${p.fold0.map(c => c.train_windows).join(", ")}</td><td>${p.fold0.map(c => `${c.train_users}/${c.val_users}/${c.test_users}`).join(", ")}</td></tr>`; }).join("")));
+
+// ================================================================== checks
+add(el("h2", {}, "Sanity checks"));
+const k1 = Object.entries(E).filter(([x]) => E[x].K === 1).flatMap(([x, e]) => Object.entries(e.methods).map(([n, s]) => [x, n, s]));
+const fedbnChecks = Object.entries(E).flatMap(([x, e]) => Object.entries(e.methods).filter(([n, s]) => s.fedbn_distinct_bn !== undefined).map(([n, s]) => `${expLabel(x)} ${label(n)}: ${(s.fedbn_distinct_bn * 100).toFixed(0)} %`));
+add(el("table", {}, [
+  ["Centralised models re-evaluated (CPU) on the client test users vs. their Stage 1 (GPU) confusion matrices", `${DATA.checks.central_reeval_windows_differing} window(s) differ over ${DATA.checks.central_models_reevaluated} models · max |ΔF1| ${DATA.checks.central_reeval_max_f1_diff.toFixed(4)} (float rounding)`],
+  ...k1.map(([x, n, s]) => [`K = 1, ${label(n)}, S0 (centralised data, Adam restarted every round) vs centralised`, `${pm(s.metrics.test_f1)} vs ${pm(CEN.fcn.test_f1)} · Δ ${s.vs_central ? sgn(s.vs_central.mean_diff) : "–"} (${s.vs_central ? s.vs_central.wins + "/" + s.vs_central.pairs : ""})`]),
+  ["FedBN: clients keep distinct BN layers at the selected round (share of runs)", fedbnChecks.join("<br>") || "–"],
+  ["Summed client confusion counts = direct evaluation of the saved global model on test.npz", "✔ verified in the smoke test (identical matrices)"],
+].map(([a, b]) => `<tr><td>${a}</td><td style="text-align:left">${b}</td></tr>`).join("")));
+
+add(el("h2", {}, "Protocol"));
+add(el("table", {}, [["Clients", "K = 5 (primary), K = 3 (sensitivity), full participation; train, val and test users assigned to clients"],
+  ["Rounds / local epochs", "R = 40, E = 1 (ablation E = 3, R = 14); Adam lr 1e-3 re-initialised each round, batch 64, grad-clip 1.0"],
+  ["Aggregation", "FedAvg weighted by training windows. FedBN = FedAvg for conv/linear weights, BN γ, β and running statistics stay on the client"],
+  ["Selection", "Best round on federated validation macro-F1 (summed confusion counts), early stopping with patience 10 applied to the curve"],
+  ["Normalisation", "z-score with the fold's pooled training mean/std (federated sums), identical to the centralised baseline"],
+  ["LSTM", "No BatchNorm layers, so FedBN = FedAvg; only FedAvg is run"]].map(([a, b]) => `<tr><td>${a}</td><td style="text-align:left">${b}</td></tr>`).join("")));
+add(el("p", { class: "note" }, "See docs/experiment_setup_federated.md. Data, folds and models: docs/experiment_setup_centralised_baseline.md."));
+</script>
+</body>
+</html>
