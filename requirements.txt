@@ -1,0 +1,26 @@
+# ---------------------------------------------------------------------------
+# AITDM – WISDM federated learning
+# Python 3.11 – 3.13 is supported (Flower requires >= 3.11).
+#
+# Install with the helper script (recommended):
+#   bash scripts/setup_env.sh          (add --cpu for a CPU-only PyTorch)
+# Windows users: run the bash scripts inside WSL2 (Ubuntu), see Local/Wsl/README.md
+# ---------------------------------------------------------------------------
+
+# --- Federated learning (Flower) ------------------------------------------
+# [simulation] pulls in Ray (Simulation Runtime used by `flwr run .` and run_seeds.py)
+# [dp] pulls in dp-accounting (privacy budget epsilon for differential privacy)
+flwr[simulation,dp]==1.41.0
+
+# --- Deep learning ---------------------------------------------------------
+# 2.9.1 = the version every result in outputs/ was produced with (fep container).
+# For a CPU-only install use: --index-url https://download.pytorch.org/whl/cpu
+# (setup_env.sh --cpu does this for you)
+torch==2.9.1
+
+# --- Data handling, statistics and plots -----------------------------------
+numpy>=1.26
+pandas>=2.1          # data_splitting/prepare_wisdm.py
+scikit-learn>=1.4    # subject-wise folds (StratifiedGroupKFold)
+scipy>=1.11          # Wilcoxon tests in experiments/summarize*.py
+matplotlib>=3.8
