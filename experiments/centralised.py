@@ -1,10 +1,12 @@
-"""Centralised training of FCN (Conv1D) or LSTM on one subject-wise WISDM fold.
+"""Centralised baseline: FCN (Conv1D) or LSTM on one subject-wise WISDM fold, trained on all
+of the fold's training users in one place (what you could do if the data could be pooled).
 
 Needs only torch + numpy (runs in the cluster container). Model selection uses the
 validation users only; test loss/metrics are logged per epoch for plotting, never
-used for any decision.
+used for any decision. The networks and metrics are the ones of the Flower app
+(fl_app/aitdm_fl/task.py), so centralised and federated runs are directly comparable.
 
-    python wisdm_baseline/train.py --data data/wisdm/windows.npz --model fcn --fold 0 --seeds 1 2 3
+    python experiments/centralised.py --data data/wisdm/windows.npz --model fcn --fold 0 --seeds 1 2 3
 
 Writes <out>/<model>/fold<k>/seed<s>/{results.json, model.pt}.
 """
@@ -13,7 +15,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import random
+import os
+import sys
 import time
 from pathlib import Path
 
@@ -21,73 +24,9 @@ import numpy as np
 import torch
 from torch import nn
 
-CLASSES = ["Walking", "Jogging", "Stairs", "Sitting", "Standing", "LyingDown"]
-
-
-class FCN(nn.Module):
-    """Wang, Yan & Oates (2017): 3 conv blocks + global average pooling."""
-
-    def __init__(self, in_ch: int = 3, n_classes: int = 6):
-        super().__init__()
-
-        def block(i, o, k):
-            return [nn.Conv1d(i, o, k, padding="same"), nn.BatchNorm1d(o), nn.ReLU()]
-
-        self.features = nn.Sequential(
-            *block(in_ch, 128, 8), *block(128, 256, 5), *block(256, 128, 3)
-        )
-        self.head = nn.Linear(128, n_classes)
-
-    def forward(self, x):  # x: (B, T, C)
-        return self.head(self.features(x.transpose(1, 2)).mean(-1))
-
-
-class LSTMNet(nn.Module):
-    """2-layer many-to-one LSTM, last time step -> dropout -> linear."""
-
-    def __init__(self, in_ch: int = 3, n_classes: int = 6, hidden: int = 128):
-        super().__init__()
-        self.lstm = nn.LSTM(in_ch, hidden, num_layers=2, batch_first=True, dropout=0.2)
-        self.drop = nn.Dropout(0.5)
-        self.head = nn.Linear(hidden, n_classes)
-
-    def forward(self, x):
-        out, _ = self.lstm(x)
-        return self.head(self.drop(out[:, -1]))
-
-
-MODELS = {"fcn": FCN, "lstm": LSTMNet}
-
-
-def metrics(y: np.ndarray, pred: np.ndarray, k: int = len(CLASSES)) -> dict:
-    cm = np.zeros((k, k), dtype=np.int64)
-    np.add.at(cm, (y, pred), 1)
-    tp = np.diag(cm).astype(float)
-    support, predicted = cm.sum(1), cm.sum(0)
-    recall = np.divide(tp, support, out=np.zeros(k), where=support > 0)
-    precision = np.divide(tp, predicted, out=np.zeros(k), where=predicted > 0)
-    f1 = np.divide(
-        2 * precision * recall,
-        precision + recall,
-        out=np.zeros(k),
-        where=(precision + recall) > 0,
-    )
-    present = support > 0
-    return {
-        "accuracy": float(tp.sum() / cm.sum()),
-        "balanced_accuracy": float(recall[present].mean()),
-        "f1_macro": float(f1[present].mean()),
-        "per_class": {
-            c: {
-                "precision": float(precision[i]),
-                "recall": float(recall[i]),
-                "f1": float(f1[i]),
-                "support": int(support[i]),
-            }
-            for i, c in enumerate(CLASSES)
-        },
-        "confusion_matrix": cm.tolist(),
-    }
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT / "fl_app"))  # works without `pip install -e fl_app` too
+from aitdm_fl.task import MODELS, metrics, set_seed  # noqa: E402
 
 
 @torch.no_grad()
@@ -100,15 +39,6 @@ def evaluate(model, x, y, criterion, batch: int = 2048):
         preds.append(out.argmax(1))
     pred = torch.cat(preds).cpu().numpy()
     return sum(losses) / len(y), pred
-
-
-def set_seed(seed: int) -> None:
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
 
 
 def run(args, data, seed: int, device) -> tuple[dict, dict]:
@@ -259,6 +189,8 @@ def main() -> None:
         tmp = run_dir / "results.json.tmp"
         tmp.write_text(json.dumps(result))
         tmp.replace(run_dir / "results.json")
+        if os.environ.get("AITDM_COMMIT"):  # set by Fep/jobs/_job_common.sh: the code this run used
+            (run_dir / "COMMIT").write_text(os.environ["AITDM_COMMIT"] + "\n")
         print(
             f"{args.model} fold{args.fold} seed{seed}: best epoch {result['best_epoch']}, "
             f"val F1 {result['val']['f1_macro']:.3f}, test F1 {result['test']['f1_macro']:.3f}, "

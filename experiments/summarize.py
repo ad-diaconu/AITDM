@@ -1,30 +1,26 @@
-"""Aggregate outputs/wisdm/<model>/fold<k>/seed<s>/results.json into
+"""Summarise the centralised runs: outputs/wisdm/<model>/fold<k>/seed<s>/results.json ->
 outputs/wisdm/summary.json and a self-contained outputs/wisdm/report.html
 (the page the `wisdm-results` canvas shows; it also opens in any browser).
 
-    python wisdm_baseline/aggregate.py --results outputs/wisdm --meta data/wisdm/meta.json
+    python experiments/summarize.py --results outputs/wisdm --meta data/wisdm/meta.json
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
 from scipy.stats import wilcoxon
 
-CLASSES = ["Walking", "Jogging", "Stairs", "Sitting", "Standing", "LyingDown"]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from evaluation import mean_std  # noqa: E402
+
+from aitdm_fl.task import CLASSES  # noqa: E402
+
 CURVES = ["train_loss", "val_loss", "test_loss", "train_acc", "val_f1", "test_f1"]
-
-
-def mean_std(values) -> dict:
-    a = np.asarray(values, dtype=float)
-    return {
-        "mean": float(a.mean()),
-        "std": float(a.std(ddof=1)) if len(a) > 1 else 0.0,
-        "n": int(len(a)),
-    }
 
 
 def summarise_model(runs: list[dict]) -> dict:
@@ -120,7 +116,7 @@ def main() -> None:
     p.add_argument(
         "--template",
         type=Path,
-        default=Path(__file__).with_name("report_template.html"),
+        default=Path(__file__).parent / "templates" / "report_template.html",
     )
     args = p.parse_args()
 
@@ -167,9 +163,9 @@ def main() -> None:
             "wilcoxon_p": float(wilcoxon(diff).pvalue),
         }
 
-    (args.results / "summary.json").write_text(json.dumps(summary, indent=1))
-    html = args.template.read_text().replace("/*__DATA__*/null", json.dumps(summary))
-    (args.results / "report.html").write_text(html)
+    (args.results / "summary.json").write_text(json.dumps(summary, indent=1), encoding="utf-8")
+    html = args.template.read_text(encoding="utf-8").replace("/*__DATA__*/null", json.dumps(summary))
+    (args.results / "report.html").write_text(html, encoding="utf-8")
     for m, s in summary["models"].items():
         mt = s["metrics"]
         print(

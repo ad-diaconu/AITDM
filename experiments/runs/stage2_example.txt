@@ -1,0 +1,22 @@
+# EXAMPLE Stage-2 run list (docs/04_aggregation_strategies.md): copy it, keep the lines you need.
+# One line = one fl_array task = 5 folds x 3 seeds of experiments/run_seeds.py:
+#   bash Fep/submit.sh --array=0-9%2 fl_array experiments/runs/stage2_example.txt
+# Compare every method with fcn-fedavg[-tag] of the same split (experiments/summarize_fl.py does it).
+# Lines are parsed like a shell command line: quote --config values.
+
+# non-IID: alternatives to FedAvg / FedBN on the main non-IID split (S2, K = 5)
+--split s2 --clients 5 --model fcn --strategy fedprox
+--split s2 --clients 5 --model fcn --strategy fedadam
+# fairness
+--split s2 --clients 5 --model fcn --strategy qfedavg
+# robustness: client 4 sends sign-flipped updates (needs the fcn-fedavg-signflip4 reference line)
+--split s2 --clients 5 --model fcn --strategy fedavg --config "malicious-clients='4' attack='sign-flip'" --tag signflip4
+--split s2 --clients 5 --model fcn --strategy fedmedian --config "malicious-clients='4' attack='sign-flip'" --tag signflip4
+--split s2 --clients 5 --model fcn --strategy krum --config "malicious-clients='4' attack='sign-flip'" --tag signflip4
+# privacy: central DP, noise multiplier 0.5 and 1.0 (epsilon in results.json)
+--split s2 --clients 5 --model fcn --strategy fedavg --config "dp-noise-multiplier=0.5" --tag dp0.5
+--split s2 --clients 5 --model fcn --strategy fedavg --config "dp-noise-multiplier=1.0" --tag dp1.0
+# data poisoning: client 4 with 50 % wrong training labels
+# (first: python data_splitting/split_data.py --splits s2 --clients 5 --label-noise 0,0,0,0,0.5)
+--split s2 --clients 5 --partition-tag noise0-0-0-0-0.5 --model fcn --strategy fedavg
+--split s2 --clients 5 --partition-tag noise0-0-0-0-0.5 --model fcn --strategy fedmedian

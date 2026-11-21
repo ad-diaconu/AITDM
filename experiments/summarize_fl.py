@@ -1,109 +1,46 @@
-"""Aggregate the federated runs and compare them with the centralised baseline.
+"""Summarise the federated runs and compare them with the centralised baseline.
 
-    python wisdm_baseline/aggregate_fl.py
+    python experiments/summarize_fl.py
 
-Reads  outputs/wisdm_fl/<split>_K<K>/<method>/fold<f>/seed<s>/results.json  (run_fl.py)
-       outputs/wisdm/<model>/fold<f>/seed<s>/{results.json, model.pt}       (Stage 1)
+Reads  outputs/wisdm_fl/<split>_K<K>/<method>/fold<f>/seed<s>/results.json  (run_seeds.py)
+       outputs/wisdm/<model>/fold<f>/seed<s>/{results.json, model.pt}       (centralised.py)
        data/partitions/wisdm/<split>_K<K>/fold<f>/{meta.json, test.npz}
 Writes outputs/wisdm_fl/summary_fl.json and the self-contained outputs/wisdm_fl/report.html.
 
 The centralised models are re-evaluated on every client's test users, so per-client fairness
 numbers exist for the centralised baseline too (same windows, same normalisation).
+Every method <model>-<strategy>[-localbn][-tag] other than FedAvg is also compared with
+<model>-fedavg[-tag] of the same experiment (paired over fold x seed, Holm per experiment).
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import sys
 from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
-import torch
-from scipy.stats import wilcoxon
 
-REPO = Path(__file__).resolve().parents[1]
-import sys  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from evaluation import REPO, Central, holm, mean_std, paired, per_client_from_users  # noqa: E402
 
-sys.path[:0] = [str(REPO), str(REPO / "fl_app")]
-from aitdm_fl.task import build_model, load_state, scores  # noqa: E402
-from wisdm_baseline.train import CLASSES  # noqa: E402
+from aitdm_fl.task import CLASSES  # noqa: E402
 
 SPLIT_NAMES = {"s0": "S0 IID", "s1": "S1 natural", "s2": "S2 user-Dirichlet α=0.3",
                "s3": "S3 window-Dirichlet α=0.3"}
 
 
-def mean_std(values) -> dict:
-    a = np.asarray(values, dtype=float)
-    return {"mean": float(a.mean()), "std": float(a.std(ddof=1)) if len(a) > 1 else 0.0, "n": int(len(a))}
-
-
-def paired(a: dict, b: dict) -> dict | None:
-    """a, b: {(fold, seed): value}. Mean difference a - b, sign count, Wilcoxon p."""
-    keys = sorted(a.keys() & b.keys())
-    if len(keys) < 2:
+def fedavg_reference(method: str, model: str, strategy: str) -> str | None:
+    """<model>-<strategy>[-localbn][-tag] -> <model>-fedavg[-tag]; None for FedAvg itself."""
+    rest = method[len(f"{model}-{strategy}"):]
+    local_bn = rest.startswith("-localbn")
+    if local_bn:
+        rest = rest[len("-localbn"):]
+    if strategy == "fedavg" and not local_bn:
         return None
-    d = np.array([a[k] - b[k] for k in keys])
-    p = 1.0 if np.allclose(d, 0) else float(wilcoxon(d).pvalue)
-    return {"pairs": len(keys), "mean_diff": float(d.mean()), "std_diff": float(d.std(ddof=1)),
-            "wins": int((d > 0).sum()), "p": p}
-
-
-def holm(tests: list[dict]) -> None:
-    """Holm-Bonferroni within one family, in place (adds p_holm)."""
-    valid = [t for t in tests if t.get("p") is not None]
-    order = sorted(range(len(valid)), key=lambda i: valid[i]["p"])
-    running = 0.0
-    for rank, i in enumerate(order):
-        running = max(running, min(1.0, (len(valid) - rank) * valid[i]["p"]))
-        valid[i]["p_holm"] = running
-
-
-def per_client_from_users(cm_by_user: dict, owner: dict, k: int) -> list[float]:
-    """Per-client macro-F1 from per-user confusion matrices and user -> client."""
-    cms = [np.zeros((6, 6), int) for _ in range(k)]
-    for u, cm in cm_by_user.items():
-        cms[owner[u]] += cm
-    return [scores(cm)["f1_macro"] for cm in cms]
-
-
-class Central:
-    """Stage 1 models, evaluated per test user of each fold (cached)."""
-
-    def __init__(self, root: Path, partitions: Path):
-        self.root, self.partitions = root, partitions
-        self.cache = {}
-        self.results = {}
-        for path in sorted(root.glob("*/fold*/seed*/results.json")):
-            r = json.loads(path.read_text())
-            self.results[(r["model"], r["fold"], r["seed"])] = r
-
-    def user_cms(self, model: str, fold: int, seed: int, pdir: Path) -> dict:
-        key = (model, fold, seed)
-        if key not in self.cache:
-            meta = json.loads((pdir / "meta.json").read_text())["normalisation"]
-            mean, std = np.array(meta["mean"], np.float32), np.array(meta["std"], np.float32)
-            d = np.load(pdir / "test.npz")
-            x = ((d["x_test"] - mean) / std).astype(np.float32)
-            net = build_model(model)
-            load_state(net, torch.load(self.root / model / f"fold{fold}" / f"seed{seed}" / "model.pt",
-                                       map_location="cpu"))
-            net.eval()
-            with torch.no_grad():
-                pred = torch.cat([net(torch.from_numpy(x[i:i + 1024])).argmax(1)
-                                  for i in range(0, len(x), 1024)]).numpy()
-            y, users = d["y_test"], d["u_test"]
-            cms = {}
-            for u in np.unique(users):
-                m = users == u
-                cm = np.zeros((6, 6), int)
-                np.add.at(cm, (y[m], pred[m]), 1)
-                cms[int(u)] = cm
-            total = sum(cms.values())
-            stage1 = np.array(self.results[key]["test"]["confusion_matrix"])
-            self.cache[key] = {"cms": cms, "windows_differing": int(np.abs(total - stage1).sum() // 2),
-                               "f1_diff": abs(scores(total)["f1_macro"] - scores(stage1)["f1_macro"])}
-        return self.cache[key]
+    return f"{model}-fedavg{rest}"
 
 
 def summarise(runs: list[dict], central_by_key: dict, central: Central, pdirs: dict, k: int,
@@ -121,7 +58,8 @@ def summarise(runs: list[dict], central_by_key: dict, central: Central, pdirs: d
         below.append(float((acc < 0.5).mean()))
         median.append(float(np.median(acc)))
     best = [part(r)["best_round"] if sub else r["best_round"] for r in runs]
-    comm = [r["comm_mb_per_round_fedbn_net" if r["strategy"] == "fedbn" and not sub else "comm_mb_per_round"]
+    comm = [r["comm_mb_per_round_fedbn_net" if r.get("local_bn", r["strategy"] == "fedbn") and not sub
+              else "comm_mb_per_round"]
             for r in runs]
     out = {
         "runs": len(runs),
@@ -197,7 +135,8 @@ def main() -> None:
     p.add_argument("--fl", type=Path, default=REPO / "outputs/wisdm_fl")
     p.add_argument("--central", type=Path, default=REPO / "outputs/wisdm")
     p.add_argument("--partitions", type=Path, default=REPO / "data/partitions/wisdm")
-    p.add_argument("--template", type=Path, default=Path(__file__).with_name("report_fl_template.html"))
+    p.add_argument("--template", type=Path,
+                   default=Path(__file__).parent / "templates" / "report_fl_template.html")
     args = p.parse_args()
 
     central = Central(args.central, args.partitions)
@@ -226,13 +165,13 @@ def main() -> None:
 
     experiments = {}
     for (exp, method), runs in sorted(groups.items()):
-        split, k = exp.split("_K")[0], int(exp.split("_K")[1])
+        split, k = exp.split("_K")[0], int(exp.split("_K")[1].split("-")[0])
         pdirs = {f: args.partitions / exp / f"fold{f}" for f in range(5)}
         e = experiments.setdefault(exp, {"split": split, "split_name": SPLIT_NAMES.get(split, split), "K": k,
                                          "methods": {}, "partition": partition_summary(args.partitions / exp)})
         e["methods"][method] = summarise(runs, central_f1, central, pdirs, k)
         e["methods"][method]["model"], e["methods"][method]["strategy"] = runs[0]["model"], runs[0]["strategy"]
-        if runs[0]["strategy"] == "fedbn":
+        if "global_bn" in runs[0]:
             g = summarise(runs, central_f1, central, pdirs, k, sub="global_bn")
             g["model"], g["strategy"] = runs[0]["model"], "fedbn-globalbn"
             e["methods"][f"{method}-globalbn"] = g
@@ -248,25 +187,30 @@ def main() -> None:
             if s.get("vs_central"):
                 s["vs_central"]["label"] = f"{name} vs centralised {s['model'].upper()}"
                 tests.append(s["vs_central"])
-        for base in ("fcn-fedbn", "fcn-fedbn-e3"):
-            avg = base.replace("fedbn", "fedavg")
-            if base in e["methods"] and avg in e["methods"]:
-                for variant in (base, f"{base}-globalbn"):
-                    a = {tuple(map(int, kk.split("-"))): v for kk, v in e["methods"][variant]["by_run"].items()}
-                    b = {tuple(map(int, kk.split("-"))): v for kk, v in e["methods"][avg]["by_run"].items()}
-                    t = paired(a, b)
-                    if t:
-                        t["label"] = f"{variant} vs {avg}"
-                        e["methods"][variant]["vs_fedavg"] = t
-                        tests.append(t)
-                    # fairness: worst-client macro-F1 of the same run (separate family)
-                    aw = {tuple(map(int, kk.split("-"))): v for kk, v in e["methods"][variant]["by_run_worst"].items()}
-                    bw = {tuple(map(int, kk.split("-"))): v for kk, v in e["methods"][avg]["by_run_worst"].items()}
-                    tw = paired(aw, bw)
-                    if tw:
-                        tw["label"] = f"worst client: {variant} vs {avg}"
-                        e["methods"][variant]["vs_fedavg_worst"] = tw
-                        e.setdefault("_fair", []).append(tw)
+        for method, s in list(e["methods"].items()):
+            if s["strategy"] == "fedbn-globalbn":
+                continue
+            avg = fedavg_reference(method, s["model"], s["strategy"])
+            if avg is None or avg not in e["methods"]:
+                continue
+            for variant in (method, f"{method}-globalbn"):
+                if variant not in e["methods"]:
+                    continue
+                a = {tuple(map(int, kk.split("-"))): v for kk, v in e["methods"][variant]["by_run"].items()}
+                b = {tuple(map(int, kk.split("-"))): v for kk, v in e["methods"][avg]["by_run"].items()}
+                t = paired(a, b)
+                if t:
+                    t["label"] = f"{variant} vs {avg}"
+                    e["methods"][variant]["vs_fedavg"] = t
+                    tests.append(t)
+                # fairness: worst-client macro-F1 of the same run (separate family)
+                aw = {tuple(map(int, kk.split("-"))): v for kk, v in e["methods"][variant]["by_run_worst"].items()}
+                bw = {tuple(map(int, kk.split("-"))): v for kk, v in e["methods"][avg]["by_run_worst"].items()}
+                tw = paired(aw, bw)
+                if tw:
+                    tw["label"] = f"worst client: {variant} vs {avg}"
+                    e["methods"][variant]["vs_fedavg_worst"] = tw
+                    e.setdefault("_fair", []).append(tw)
         holm(tests)
         holm(e.pop("_fair", []))
 
@@ -275,9 +219,9 @@ def main() -> None:
               "central_reeval_max_f1_diff": max((v["f1_diff"] for v in central.cache.values()), default=0.0)}
     summary = {"classes": CLASSES, "central": central_stage1, "experiments": experiments, "checks": checks,
                "split_names": SPLIT_NAMES}
-    (args.fl / "summary_fl.json").write_text(json.dumps(summary))
-    html = args.template.read_text().replace("/*__DATA__*/null", json.dumps(summary))
-    (args.fl / "report.html").write_text(html)
+    (args.fl / "summary_fl.json").write_text(json.dumps(summary), encoding="utf-8")
+    html = args.template.read_text(encoding="utf-8").replace("/*__DATA__*/null", json.dumps(summary))
+    (args.fl / "report.html").write_text(html, encoding="utf-8")
 
     print(f"centralised re-evaluation vs Stage 1: {checks['central_reeval_windows_differing']} windows differ "
           f"over {checks['central_models_reevaluated']} models, max |dF1| {checks['central_reeval_max_f1_diff']:.4f}")
