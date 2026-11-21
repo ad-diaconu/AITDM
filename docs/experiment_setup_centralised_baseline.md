@@ -233,7 +233,7 @@ test on the 15 paired macro-F1 values.
 
 ### Full results (fep, `dgxa100` A100, Slurm job 294409, 2 × 5 folds × 3 seeds)
 
-Produced by `wisdm_baseline/` (`prepare_wisdm.py` → `fep/train_array.sbatch` → `aggregate.py`);
+Produced by `data_splitting/prepare_wisdm.py` → `Fep/jobs/centralised_array.sbatch` (`experiments/centralised.py`) → `experiments/summarize.py` (then in `wisdm_baseline/`: `prepare_wisdm.py` → `fep/train_array.sbatch` → `aggregate.py`);
 interactive report: `outputs/wisdm/report.html` (also shown by the `wisdm-results` canvas).
 
 | Model | Val macro-F1 | Test macro-F1 | Test bal. acc. | Test acc. | Median user acc. | Users < 50 % acc. | Params |
@@ -266,6 +266,11 @@ Expect your full results in this range; a much higher subject-wise score indicat
 
 ## 9. Required changes to the tutorial code
 
+> This section is the original plan. The implementation took its own route: `prepare_wisdm.py`
+> writes `data/wisdm/windows.npz` with the fold indices, `experiments/centralised.py` trains directly on it and
+> the models live in `fl_app/aitdm_fl/task.py`; the repository now follows the tutorial's layout (see the
+> [README](../README.md)). Section 10 lists the commands as they are now.
+
 The tutorial pipeline (`AITDM_FLOWER_PROJECT_TUTORIAL`) does **not** support raw sequences out of the box:
 
 | File / function | Problem | Change |
@@ -283,41 +288,32 @@ The tutorial pipeline (`AITDM_FLOWER_PROJECT_TUTORIAL`) does **not** support raw
 
 ## 10. Step-by-step procedure
 
+On fep each step is one job ([Fep/02_running_on_slurm.md](../Fep/02_running_on_slurm.md)); the commands they run:
+
 ```bash
-# 0. Environment (tutorial venv: Python 3.12, torch 2.14, scikit-learn, pandas)
-cd ~/AITDM_Project/AITDM_FLOWER_PROJECT_TUTORIAL   # or your project copy of it
-source .venv/bin/activate
+# 1. Extract ONLY the labelled data + docs (skips the 2.3 GB unlabelled file) -> data/raw/wisdm/
+python data_splitting/get_data.py --archive ~/AITDM_Project/WISDM_at_latest.tar.gz
 
-# 1. Extract ONLY the labeled data + docs (skip the 2.3 GB unlabeled file)
-mkdir -p data/raw/wisdm
-tar xzf ~/AITDM_Project/WISDM_at_latest.tar.gz -C data/raw/wisdm --strip-components=5 \
-    --wildcards '*/WISDM_at_v2.0_raw.txt' '*/readme.txt' '*_about.txt' '*/WISDM_at_v2.0_demographics.txt'
+# 2. Clean, window and split into 5 subject-wise folds -> data/wisdm/{windows.npz, meta.json}
+python data_splitting/prepare_wisdm.py --input data/raw/wisdm/WISDM_at_v2.0_raw.txt     --window 200 --train-stride 100 --eval-stride 200 --max-gap-ms 1000 --folds 5 --seed 42 --out data/wisdm
+#    (steps 1-2 on fep: bash Fep/submit.sh reproduce data)
 
-# 2. Clean, window and split into 5 subject-wise folds (5 clients each, for later FL)
-python data_splitting/prepare_wisdm.py --input data/raw/wisdm/WISDM_at_v2.0_raw.txt \
-    --window 200 --train-stride 100 --eval-stride 200 --max-gap-ms 1000 \
-    --folds 5 --num-clients 5 --seed 42 --out data/partitions/wisdm
+# 3. Sanity checks (§11): tests/test_prepare.py on synthetic data; the asserts in prepare_wisdm.py on the real data
 
-# 3. Sanity checks (must pass before training, see §11)
-
-# 4. Train both models on all folds, seeds 1 2 3
+# 4. Train both models on all folds, seeds 1 2 3 -> outputs/wisdm/<model>/fold<k>/seed<s>/
 for k in 0 1 2 3 4; do
   for m in fcn lstm; do
-    python experiments/centralised.py --partitions data/partitions/wisdm_fold$k \
-        --model $m --epochs 30 --patience 8 --batch-size 64 --lr 1e-3 \
-        --seeds 1 2 3 --name central-$m-fold$k
+    python experiments/centralised.py --data data/wisdm/windows.npz --model $m --fold $k         --seeds 1 2 3 --epochs 30 --patience 8 --batch-size 64 --lr 1e-3 --out outputs/wisdm
   done
 done
+#    (on fep: bash Fep/submit.sh centralised_array)
 
-# 5. Validation table (development), then the final table with test numbers once
-python experiments/summarize.py outputs/experiments/central-*
-python experiments/summarize.py outputs/experiments/central-* --with-test
+# 5. Summary, paired test and report -> outputs/wisdm/{summary.json, report.html}
+python experiments/summarize.py --results outputs/wisdm --meta data/wisdm/meta.json
 
-# 6. Error analysis on validation data (per class, confusion matrix, hardest users)
-python explainability/error_analysis.py --run outputs/experiments/central-fcn-fold0/seed1
+# 6. Error analysis on validation users (per class, confusion matrix, hardest windows, worst users)
+python explainability/error_analysis.py --run outputs/wisdm/fcn/fold0/seed1 --partitions data/partitions/wisdm/s1_K5/fold0
 ```
-
-On fep, run steps 2 and 4 as Slurm jobs (`bash Fep/submit.sh centralised ...`), never on the login node.
 
 ---
 

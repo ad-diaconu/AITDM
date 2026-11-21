@@ -28,7 +28,7 @@ FCN 0.539 ± 0.023, LSTM 0.532 ± 0.035 test macro-F1; majority class 0.104.
 
 | Item | Value (unchanged) |
 |---|---|
-| Data, cleaning, resampling, windows | `wisdm_baseline/prepare_wisdm.py` → `data/wisdm/windows.npz` (27 961 windows, 204 users) |
+| Data, cleaning, resampling, windows | `data_splitting/prepare_wisdm.py` → `data/wisdm/windows.npz` (27 961 windows, 204 users) |
 | Folds | The 5 outer subject-wise folds and their inner validation split (seed 42) |
 | Train / val / test **users** per fold | Identical. Only their assignment to clients is new |
 | Input normalisation | Per-channel z-score with the fold's **pooled training** mean/std (computed federatedly, §5) |
@@ -93,7 +93,7 @@ S2/S3: the same q_c, S0: random users).
 
 ### 4.2 Measured non-IID-ness (generated partitions, training data, all 5 folds)
 
-Measured on the partitions written by `make_fl_partitions.py` (with the val/test constraints of §4.1).
+Measured on the partitions written by `split_data.py` (with the val/test constraints of §4.1).
 JSD = Jensen–Shannon divergence (base 2) between a client's label distribution and the fold's pooled one
 (0 = identical, 1 = disjoint). Size CV = std/mean of client sizes.
 
@@ -122,7 +122,7 @@ Takeaway: keeping users intact limits label skew (many users per client average 
 shift, S2 adds real label and quantity skew. Strong label skew (S3) is only possible by splitting users across
 clients, which removes the feature shift. That is why S3 is an optional stress test and not the main setting.
 
-`make_fl_partitions.py` (§9) writes these statistics and one label-distribution plot per split to `meta.json`
+`split_data.py` (§9) writes these statistics and one label-distribution plot per split to `meta.json`
 and `label_distribution.png`, as `split_data.py` does in the tutorial.
 
 ---
@@ -243,24 +243,33 @@ logs test metrics per epoch but reports the best-validation epoch.
 ## 9. Implementation (as built)
 
 The Flower app was written for this repository (`fl_app/`, structure adapted from the tutorial's
-`fl_app`); the tutorial clone is unchanged. The models and metrics are imported from
-`wisdm_baseline/train.py`, so FL and centralised runs use identical networks.
+`fl_app`); the repository follows the tutorial's layout (`data_splitting/`, `experiments/`, `Fep/`, see the
+[README](../README.md)). The models and metrics live in `fl_app/aitdm_fl/task.py` and are imported by
+`experiments/centralised.py` too, so FL and centralised runs use identical networks. (Before the
+restructure these files were `wisdm_baseline/{make_fl_partitions, train, run_fl, aggregate_fl}.py` and
+`wisdm_baseline/fep/`; the code is the same, verified to reproduce the partitions and runs.)
 
 | File | What it does |
 |---|---|
-| `wisdm_baseline/make_fl_partitions.py` | From `windows.npz`: per split × K × fold writes `data/partitions/wisdm/<split>_K<K>/fold<f>/client_<i>.npz` (`x_/y_/u_` for `train`, `val`, `test`, raw m/s² float32 `(N, 200, 3)`), `test.npz` (union of the clients' test users), `meta.json` (normalisation constants, users and label shares per client, JSD), `label_distribution.png`. Raw inputs compress ~3× better; clients z-score them on load with the constants of `meta.json`. Checks: every window on exactly one client, no user on two clients (except S0 and S3 training windows). 1.3 GB for S0–S3 × K ∈ {5, 3} + S0 K = 1 |
-| `fl_app/aitdm_fl/task.py` | Data loading (cached per client), `fcn` / `lstm` from `wisdm_baseline/train.py`, local training (fresh Adam per round, grad-clip 1.0), evaluation returning **confusion counts, loss sums and per-user counts**, pooled scores from summed counts |
+| `data_splitting/split_data.py` (+ `partitioning.py`) | From `windows.npz`: per split × K × fold writes `data/partitions/wisdm/<split>_K<K>/fold<f>/client_<i>.npz` (`x_/y_/u_` for `train`, `val`, `test`, raw m/s² float32 `(N, 200, 3)`), `test.npz` (union of the clients' test users), `meta.json` (normalisation constants, users and label shares per client, JSD), `label_distribution.png`. Raw inputs compress ~3× better; clients z-score them on load with the constants of `meta.json`. Checks: every window on exactly one client, no user on two clients (except S0 and S3 training windows). 1.3 GB for S0–S3 × K ∈ {5, 3} + S0 K = 1 |
+| `fl_app/aitdm_fl/task.py` | Models `fcn` / `lstm` and metrics (shared with `experiments/centralised.py`), data loading (cached per client), local training (fresh Adam per round, grad-clip 1.0), evaluation returning **confusion counts, loss sums and per-user counts**, pooled scores from summed counts |
 | `fl_app/aitdm_fl/client_app.py` | **FedBN:** after loading the global weights the client overwrites all BN entries with its own from `context.state["bn"]`, and stores them back after training. Evaluation on `val` and `test` (FedBN: personalised **and** with the received averaged BN = global-BN) |
-| `fl_app/aitdm_fl/server_app.py` | FedAvg aggregation (weights = training windows) for both strategies, `num_batches_tracked` never sent. Custom `evaluate_metrics_aggr_fn` that **sums** client counts. The global arrays of every round are kept in memory. The best round is chosen on validation macro-F1 with the patience-10 early-stopping rule applied to the 40-round curve, which gives the same selection as stopping early. Writes `results.json` (Stage 1 format + `per_client`, `history`, `global_bn`, `fedbn_check`) and `final_model.pt` (best round) |
-| `wisdm_baseline/run_fl.py` | Loops over folds × seeds and calls `flwr.simulation.run_simulation()` in-process (no SuperLink, so no fixed ports). The run config goes through a per-process JSON file (`$AITDM_FL_CONFIG_FILE`, re-read by the Ray workers on every call). Ray is started with `address="local"` and its own temp dir, so concurrent simulations on one node never share a Ray cluster. Finished runs are skipped |
-| `wisdm_baseline/fep/fl_array.sbatch` + `fl_primary.txt`, `fl_secondary.txt`, `fl_sanity.txt`, `fl_lstm_r80.txt` | Slurm array: one jobs-file line = one experiment (5 folds × 3 seeds). With `--gres=gpu:N` the folds are spread over N GPUs |
-| `wisdm_baseline/aggregate_fl.py` + `report_fl_template.html` | Paired tests (Holm per experiment), fairness (worst client, separate Holm family), per-round curves, partitions, sanity checks. Re-evaluates the Stage 1 models on every client's test users. Writes `outputs/wisdm_fl/summary_fl.json` and `report.html` (also in the `wisdm-results` canvas with `{"report": "federated"}`) |
+| `fl_app/aitdm_fl/server_app.py` | FedAvg aggregation (weights = training windows) for both strategies (Stage 2: any strategy of `build_strategy()`, optional DP), `num_batches_tracked` never sent. Custom `evaluate_metrics_aggr_fn` that **sums** client counts. The global arrays of every round are kept in memory. The best round is chosen on validation macro-F1 with the patience-10 early-stopping rule applied to the 40-round curve, which gives the same selection as stopping early. Writes `results.json` (Stage 1 format + `per_client`, `history`, `global_bn`, `fedbn_check`) and `final_model.pt` (best round) |
+| `experiments/run_seeds.py` | Loops over folds × seeds and calls `flwr.simulation.run_simulation()` in-process (no SuperLink, so no fixed ports). The run config goes through a per-process JSON file (`$AITDM_FL_CONFIG_FILE`, re-read by the Ray workers on every call). Ray is started with `address="local"` and its own temp dir, so concurrent simulations on one node never share a Ray cluster. Finished runs are skipped |
+| `Fep/jobs/fl_array.sbatch` + `experiments/runs/{fl_primary, fl_secondary, fl_sanity, fl_lstm_r80}.txt` | Slurm array (`bash Fep/submit.sh --array=... fl_array <run list>`): one run-list line = one experiment (5 folds × 3 seeds). With `--gres=gpu:N` the folds are spread over N GPUs |
+| `experiments/summarize_fl.py` + `templates/report_fl_template.html` (+ shared `evaluation.py`) | Paired tests (Holm per experiment), fairness (worst client, separate Holm family), per-round curves, partitions, sanity checks. Re-evaluates the Stage 1 models on every client's test users. Writes `outputs/wisdm_fl/summary_fl.json` and `report.html` (also in the `wisdm-results` canvas with `{"report": "federated"}`) |
 
 Outputs: `outputs/wisdm_fl/<split>_K<K>/<model>-<strategy>[-tag]/fold<f>/seed<s>/{results.json, final_model.pt}`.
+How to run all of this on fep now: [Fep/02_running_on_slurm.md](../Fep/02_running_on_slurm.md).
 
 ---
 
 ## 10. Running on fep (as run)
+
+The record of the Stage 1 runs, with the paths of that time. Today's equivalent:
+`AITDM_IMAGE=~/NNProj/convnext.sif bash Fep/submit.sh --array=0-8%2 --gres=gpu:2 --cpus-per-task=20 --mem=64G fl_array experiments/runs/fl_primary.txt`
+([Fep guide](../Fep/02_running_on_slurm.md)).
+
 
 * **Environment:** `~/.venvs/aitdm-fl` = venv with `--system-site-packages` on top of `~/NNProj/convnext.sif`
   (Python 3.11, torch 2.9.1 + CUDA 12.6), plus `flwr[simulation]==1.41.0` (Ray 2.55.1), 379 MB.
@@ -279,7 +288,7 @@ Outputs: `outputs/wisdm_fl/<split>_K<K>/<model>-<strategy>[-tag]/fold<f>/seed<s>
 
 ## 11. Sanity checks (all passed)
 
-- [x] Union of clients' train/val/test users = the fold's users; no user on two clients (S1, S2); every window on exactly one client (asserted in `make_fl_partitions.py`).
+- [x] Union of clients' train/val/test users = the fold's users; no user on two clients (S1, S2); every window on exactly one client (asserted in `data_splitting/split_data.py`).
 - [x] Normalisation constants in the partitions equal the Stage 1 values of the fold (to 7 digits; both use the pooled training std with ddof = 1).
 - [x] **S0 + FedAvg with K = 1** reproduces the centralised result: test macro-F1 0.548 ± 0.031 vs. 0.539 ± 0.023 (Δ +0.010, 8/15, p = 0.19; job 294600).
 - [x] FedBN: at the selected round all 5 clients have distinct BN statistics in 100 % of the runs; under FedAvg they are identical.
@@ -366,7 +375,7 @@ centralised model's 0.161, median client 0.554); FedBN raises the worst client t
 
 ## 15. Deliverables of this stage
 
-- [x] `make_fl_partitions.py` + partitions, `meta.json` and label-distribution plots per split
+- [x] `split_data.py` (was `make_fl_partitions.py`) + partitions, `meta.json` and label-distribution plots per split
 - [x] Flower app (`fl_app/`) with FedAvg / FedBN, confusion-count evaluation and best-round selection
 - [x] Sanity checks of §11 (including K = 1 ≈ centralised)
 - [x] 135 primary + 165 secondary + 15 sanity + 45 LSTM R = 80 runs on fep, `outputs/wisdm_fl/`

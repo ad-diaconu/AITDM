@@ -1,6 +1,6 @@
 # Contributing
 
-This repo holds ML experiments: the WISDM centralised baseline, federated learning (FedAvg / FedBN) and the reporting site.
+This repo holds ML experiments: the WISDM centralised baseline and federated learning (FedAvg / FedBN, Stage 2 strategies).
 Most of what we change is not just code. It is data, splits, configs and results, so the git history has to answer
 one question for anyone who reads it later: **which code and which data produced this number?**
 
@@ -48,9 +48,9 @@ We use [Conventional Commits](https://www.conventionalcommits.org/) with **types
 | `train` | Training loop, loss, optimiser, scheduler, FL strategy and aggregation | `train(fl): implement fedbn local batchnorm` |
 | `eval` | Metrics, evaluation protocol, test-set handling | `eval: report per-client macro-f1 and worst client` |
 | `results` | Committing produced outputs: `results.json`, `summary*.json`, report data | `results(fl): add s2_K5 fcn-fedavg-e3 runs` |
-| `viz` | Plots, HTML reports, the `presented_outputs` site | `viz(site): add fl-vs-centralised gap chart` |
+| `viz` | Plots, HTML reports | `viz(report): add fl-vs-centralised gap chart` |
 | `infra` | Cluster jobs, sbatch scripts, environment, dependencies, Flower config | `infra(fep): raise array job time limit to 4h` |
-| `docs` | Experiment setup docs, `planning.md`, README, this file | `docs(fl): document non-iid split statistics` |
+| `docs` | Experiment setup docs, README, this file | `docs(fl): document non-iid split statistics` |
 | `fix` | A bug fix in any of the above | `fix(data): stop test users leaking into fold 3 train` |
 | `refactor` | A code change with **no** effect on outputs | `refactor(train): extract shared optimiser factory` |
 | `perf` | Faster or leaner with identical outputs | `perf(data): cache windows as float16 npz` |
@@ -66,8 +66,9 @@ Use the part of the project that changed. Common scopes:
 - **Pipelines**: `baseline`, `fl`
 - **Data**: `wisdm`, `partitions`
 - **Models**: `fcn`, `lstm`
-- **Strategies**: `fedavg`, `fedbn`
-- **Tooling**: `fep` (cluster / sbatch), `site`, `report`
+- **Strategies**: `fedavg`, `fedbn`, `fedprox`, `krum`, ... (any `--strategy`), `dp`, `attack`
+- **Explainability**: `xai`
+- **Tooling**: `fep` (cluster / sbatch / `Fep/`), `scripts`, `ci`, `report`
 
 Add a new scope when a new area appears. Keep it short and lower case.
 
@@ -88,7 +89,7 @@ data(wisdm)!: switch windows from 10 s to 5 s
 
 Shorter windows double the sample count and match the setup in the reference paper.
 
-BREAKING-RESULTS: all outputs/wisdm and outputs/wisdm_fl runs; re-run train.py and run_fl.py matrices
+BREAKING-RESULTS: all outputs/wisdm and outputs/wisdm_fl runs; re-run centralised_array and the fl_array run lists
 ```
 
 ### 2.5 ML trailers
@@ -98,7 +99,7 @@ Add any of these at the end of the message, one per line, when they apply:
 | Trailer | Meaning | Example |
 |---|---|---|
 | `Metrics:` | Headline numbers the commit produced or changed (mean ± std over folds × seeds) | `Metrics: test macro-F1 0.539 ± 0.023 (fcn), 0.532 ± 0.035 (lstm)` |
-| `Config:` | The command, args or run-list file that reproduces it | `Config: wisdm_baseline/fep/fl_primary.txt` |
+| `Config:` | The command, args or run-list file that reproduces it | `Config: experiments/runs/fl_primary.txt` |
 | `Code:` | For `results` commits: the commit hash of the code that produced the outputs | `Code: 746fb7d` |
 | `Seeds:` / `Folds:` | Coverage when it is not the default (5 folds × 3 seeds) | `Seeds: 1,2` |
 | `Refs:` | Research question, issue or PR | `Refs: RQ2, #4` |
@@ -119,7 +120,7 @@ Refs: RQ2
 results(fl): add primary matrix for s0/s1/s2 with K=5
 
 Metrics: fcn-fedavg s0 <mean> ± <std>, fcn-fedbn s0 <mean> ± <std>
-Config: wisdm_baseline/fep/fl_primary.txt
+Config: experiments/runs/fl_primary.txt
 Code: 746fb7d
 Refs: RQ1, RQ3
 ```
