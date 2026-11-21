@@ -2,8 +2,9 @@
 
 Implements sections 3-5 of docs/experiment_setup_centralised_baseline.md.
 Runs locally (needs pandas + scikit-learn); the cluster only needs the output .npz.
+Get the raw file first with data_splitting/get_data.py.
 
-    python wisdm_baseline/prepare_wisdm.py \
+    python data_splitting/prepare_wisdm.py \
         --input data/raw/wisdm/WISDM_at_v2.0_raw.txt --out data/wisdm
 """
 
