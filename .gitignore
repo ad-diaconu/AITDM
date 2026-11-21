@@ -1,3 +1,39 @@
+# Python / virtual environment
+.venv/
+venv/
 __pycache__/
-logs/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+.pytest_cache/
+.ruff_cache/
+
+# Data (downloaded / generated, never committed: regenerate it with data_splitting/)
+# No trailing slash: on fep this is a link to ~/AITDM_Project/data (Fep/setup_fep.sh)
+/data
+
+# Run artefacts. outputs/ IS committed (results.json, summaries, reports), but not the
+# model weights; logs stay out
+/logs
+lightning_logs/
 *.pt
+*.pth
+*.fab
+
+# OS / editor
+.DS_Store
+__MACOSX/
+.idea/
+.vscode/
+
+# Ad-hoc runs of scripts/run_simulation.sh / submit_run.sh (experiment results come from
+# experiments/run_seeds.py and centralised.py and ARE committed)
+/outputs/sim-*/
+/outputs/deploy-*/
+
+# Claude Code: skills and review notes are personal (each person keeps their own), except the
+# shared /push skill; the agents in .claude/agents/ and .claude/experiment-review.md ARE shared
+/.claude/skills/*
+!/.claude/skills/push/
+/.claude/reviews/
+/.claude/settings.local.json
