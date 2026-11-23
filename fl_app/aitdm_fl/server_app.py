@@ -1,7 +1,8 @@
-"""Flower ServerApp: FedAvg aggregation for both FedAvg and FedBN (FedBN clients ignore the
-averaged BN values), exact pooled metrics from summed client confusion counts, and selection
-of the best round on federated validation macro-F1 (early stopping with `patience`,
-applied to the per-round curve). Writes results.json in the format of the centralised runs.
+"""Flower ServerApp: aggregation with the strategy selected by run config `strategy` (FedAvg for
+both FedAvg and FedBN: FedBN clients ignore the averaged BN values), optional central
+differential privacy, exact pooled metrics from summed client confusion counts, and selection
+of the best round on federated validation macro-F1 (early stopping with `patience`, applied to
+the per-round curve). Writes results.json in the format of the centralised runs.
 """
 
 from __future__ import annotations
@@ -13,13 +14,87 @@ from pathlib import Path
 import numpy as np
 import torch
 from flwr.app import ArrayRecord, ConfigRecord, Context, MetricRecord
-from flwr.serverapp import Grid, ServerApp
-from flwr.serverapp.strategy import FedAvg
+from flwr.serverapp import (
+    Grid,
+    NeighboringRelation,
+    PrivacyConfig,
+    RdpAccountant,
+    SamplingMethod,
+    ServerApp,
+)
+from flwr.serverapp.strategy import (
+    DifferentialPrivacyServerSideFixedClipping,
+    FedAdam,
+    FedAvg,
+    FedAvgM,
+    FedMedian,
+    FedProx,
+    FedTrimmedAvg,
+    FedYogi,
+    Krum,
+    QFedAvg,
+)
 
-from aitdm_fl.task import bn_state, build_model, meta, run_config, scores, set_seed, shared_state
+from aitdm_fl.task import (bn_state, build_model, meta, run_config, scores, set_seed, shared_state,
+                           uses_local_bn)
 
 app = ServerApp()
 PREFIXES = ("val", "test", "gval", "gtest")
+STRATEGIES = ["fedavg", "fedbn", "fedprox", "fedavgm", "fedadam", "fedyogi",
+              "fedmedian", "fedtrimmedavg", "krum", "qfedavg"]
+
+
+def build_strategy(cfg: dict, k: int, **callbacks):
+    """The aggregation strategy of run config 'strategy' (docs/04_aggregation_strategies.md),
+    optionally wrapped in central differential privacy. 'fedbn' aggregates like 'fedavg'."""
+    common = dict(fraction_train=1.0, fraction_evaluate=1.0, min_train_nodes=k,
+                  min_evaluate_nodes=k, min_available_nodes=k, **callbacks)
+    noise = float(cfg["dp-noise-multiplier"])
+    if noise > 0:
+        # DP-FedAvg averages client updates with EQUAL weights (otherwise one big client would
+        # dominate and the privacy analysis would not hold)
+        common["weighted_by_key"] = "unit-weight"
+    name = str(cfg["strategy"]).lower()
+    if name in ("fedavg", "fedbn"):
+        strategy = FedAvg(**common)
+    elif name == "fedprox":
+        strategy = FedProx(proximal_mu=float(cfg["proximal-mu"]), **common)
+    elif name == "fedavgm":
+        strategy = FedAvgM(server_momentum=float(cfg["server-momentum"]), **common)
+    elif name == "fedadam":
+        strategy = FedAdam(eta=float(cfg["server-lr"]), **common)
+    elif name == "fedyogi":
+        strategy = FedYogi(eta=float(cfg["server-lr"]), **common)
+    elif name == "fedmedian":
+        strategy = FedMedian(**common)
+    elif name == "fedtrimmedavg":
+        strategy = FedTrimmedAvg(beta=float(cfg["trim-beta"]), **common)
+    elif name == "krum":
+        strategy = Krum(num_malicious_nodes=int(cfg["num-malicious"]), **common)
+    elif name == "qfedavg":
+        # q-FedAvg estimates the Lipschitz constant as 1 / client_learning_rate
+        strategy = QFedAvg(client_learning_rate=float(cfg["qfedavg-client-lr"]),
+                           q=float(cfg["qfedavg-q"]), **common)
+    else:
+        raise ValueError(f"Unknown strategy '{name}'. Use one of: {', '.join(STRATEGIES)}")
+    if noise > 0:
+        strategy = DifferentialPrivacyServerSideFixedClipping(
+            strategy, noise_multiplier=noise, clipping_norm=float(cfg["dp-clipping-norm"]),
+            num_sampled_clients=k, accountant=build_accountant(strategy, cfg, k))
+    return strategy
+
+
+def build_accountant(strategy, cfg: dict, k: int):
+    """Track the privacy budget (epsilon at delta = dp-delta) over the rounds.
+    Flower's accountant only supports strategies that aggregate like FedAvg."""
+    if not (isinstance(strategy, FedAvg) and type(strategy).aggregate_train is FedAvg.aggregate_train):
+        print(f"[DP] No epsilon accounting for '{cfg['strategy']}' (FedAvg-style aggregation only). "
+              "Noise is still added.")
+        return None
+    return RdpAccountant(PrivacyConfig(
+        target_delta=float(cfg["dp-delta"]), population_size=k,
+        neighboring_relation=NeighboringRelation.ADD_OR_REMOVE_ONE,
+        sampling_method=SamplingMethod.NO_AMPLIFICATION))
 
 
 def select_round(f1_by_round: list[float], patience: int) -> tuple[int, int]:
@@ -37,8 +112,12 @@ def select_round(f1_by_round: list[float], patience: int) -> tuple[int, int]:
 def main(grid: Grid, context: Context) -> None:
     cfg = run_config(context)
     pdir = str(cfg["partitions-dir"])
+    if not pdir:
+        raise ValueError("run config 'partitions-dir' is empty. Pass it with "
+                         "--run-config \"partitions-dir='/abs/path/to/data/partitions/wisdm/<split>_K<K>/fold<f>'\"")
     info = meta(pdir)
     k = int(info["num_clients"])
+    local_bn = uses_local_bn(cfg)
     set_seed(int(cfg["seed"]))
     model = build_model(cfg["model"])
     initial = ArrayRecord(shared_state(model))
@@ -79,9 +158,7 @@ def main(grid: Grid, context: Context) -> None:
         stash[server_round] = {k_: v.clone() for k_, v in arrays.to_torch_state_dict().items()}
         return None
 
-    strategy = FedAvg(fraction_train=1.0, fraction_evaluate=1.0, min_train_nodes=k,
-                      min_evaluate_nodes=k, min_available_nodes=k,
-                      train_metrics_aggr_fn=train_aggr, evaluate_metrics_aggr_fn=eval_aggr)
+    strategy = build_strategy(cfg, k, train_metrics_aggr_fn=train_aggr, evaluate_metrics_aggr_fn=eval_aggr)
     t0 = time.time()
     rounds = int(cfg["num-server-rounds"])
     strategy.start(grid=grid, initial_arrays=initial, num_rounds=rounds,
@@ -129,7 +206,23 @@ def main(grid: Grid, context: Context) -> None:
         "val": selected["val"], "test": selected["test"], "per_client": selected["per_client"],
         "test_per_user_accuracy": selected["test_per_user_accuracy"], "history": history,
     }
-    if cfg["strategy"] == "fedbn":
+    # Stage-2 settings: only recorded when they differ from plain FedAvg / FedBN, so the
+    # results.json of existing experiments keep exactly their format
+    stage2 = {key: cfg[key] for key in ("loss-weighting", "dp-noise-multiplier", "malicious-clients")
+              if str(cfg[key]) not in ("none", "0.0", "0", "")}
+    if cfg["strategy"] not in ("fedavg", "fedbn") or (local_bn and cfg["strategy"] != "fedbn") or stage2:
+        result["local_bn"] = local_bn
+        result["stage2"] = {key: cfg[key] for key in (
+            "local-bn", "loss-weighting", "proximal-mu", "server-momentum", "server-lr", "trim-beta",
+            "num-malicious", "qfedavg-q", "qfedavg-client-lr", "dp-noise-multiplier", "dp-clipping-norm",
+            "dp-delta", "malicious-clients", "attack", "attack-inflate-examples")}
+        if "variant" in info:
+            result["partition"]["variant"] = info["variant"]
+    if hasattr(strategy, "privacy_spent"):
+        spent = strategy.privacy_spent()
+        if spent is not None:
+            result["privacy"] = {"epsilon": spent.epsilon, "delta": spent.delta}
+    if local_bn:
         g_best, g_stop = select_round([h["gval_f1"] for h in history], patience)
         g = evaluation_at(g_best, "gtest", "gval")
         result["global_bn"] = {"best_round": g_best, "stop_round": g_stop, "val": g["val"], "test": g["test"],

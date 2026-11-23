@@ -1,0 +1,47 @@
+name: CI
+
+# Checks the code before cluster time is spent on it. Results-only commits (outputs/) do not trigger it.
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["outputs/**"]
+  pull_request:
+    paths-ignore: ["outputs/**"]
+  workflow_dispatch:
+
+concurrency:   # a newer push to the same branch / PR cancels the older run
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"   # as on fep (3.12.12)
+          cache: pip
+
+      - name: Install (CPU PyTorch)
+        run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install --upgrade pip
+          pip install torch==2.9.1 --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements-dev.txt
+          pip install -e fl_app
+
+      - name: Lint
+        run: .venv/bin/ruff check .
+
+      - name: Links in the docs
+        run: .venv/bin/python tests/check_links.py
+
+      - name: Unit tests
+        run: .venv/bin/python -m pytest -q tests
+
+      - name: Smoke test (data, centralised, federated incl. Stage 2, summaries, explainability, flwr run)
+        run: bash tests/smoke_test.sh
