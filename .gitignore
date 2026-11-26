@@ -30,10 +30,15 @@ __MACOSX/
 # experiments/run_seeds.py and centralised.py and ARE committed)
 /outputs/sim-*/
 /outputs/deploy-*/
+# The tutorial demo (Fep/jobs/tutorial.sbatch, docs/tutorial.md) is not a result
+/outputs/tutorial/
 
 # Claude Code: skills and review notes are personal (each person keeps their own), except the
-# shared /push skill; the agents in .claude/agents/ and .claude/experiment-review.md ARE shared
+# shared /push skill; the agents in .claude/agents/ and .claude/experiment-review.md ARE shared.
+# gh-backlog: the sync script and SKILL.md.example are shared; your own SKILL.md (a copy) is not
 /.claude/skills/*
 !/.claude/skills/push/
+!/.claude/skills/gh-backlog/
+/.claude/skills/gh-backlog/SKILL.md
 /.claude/reviews/
 /.claude/settings.local.json
