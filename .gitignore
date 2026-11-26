@@ -30,6 +30,8 @@ __MACOSX/
 # experiments/run_seeds.py and centralised.py and ARE committed)
 /outputs/sim-*/
 /outputs/deploy-*/
+# The tutorial demo (Fep/jobs/tutorial.sbatch, docs/tutorial.md) is not a result
+/outputs/tutorial/
 
 # Claude Code: skills and review notes are personal (each person keeps their own), except the
 # shared /push skill; the agents in .claude/agents/ and .claude/experiment-review.md ARE shared.
