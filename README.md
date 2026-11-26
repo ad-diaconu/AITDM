@@ -20,6 +20,7 @@ adapted to WISDM. **The experiments run on the fep cluster: start with [Fep/READ
 git clone https://github.com/ad-diaconu/AITDM.git ~/AITDM_Project/AITDM && cd ~/AITDM_Project/AITDM
 bash Fep/setup_fep.sh                         # once (an existing clone: see Fep/README.md first!)
 bash Fep/submit.sh smoke_test                 # the whole pipeline on synthetic data
+bash Fep/submit.sh tutorial                   # demo on real data in a few minutes (docs/tutorial.md)
 bash Fep/submit.sh reproduce data             # WISDM archive -> windows -> partitions
 bash Fep/submit.sh centralised_array          # Stage 1 centralised baseline
 bash Fep/submit.sh --array=0-8%2 fl_array experiments/runs/fl_primary.txt
@@ -41,6 +42,8 @@ bash Fep/submit.sh reproduce summary          # summaries and reports
 The full protocol: [centralised baseline](docs/experiment_setup_centralised_baseline.md),
 [federated experiments](docs/experiment_setup_federated.md), [Stage 2 strategies](docs/04_aggregation_strategies.md),
 [explainability](docs/05_explainability.md). How we commit code and results: [CONTRIBUTING.md](CONTRIBUTING.md).
+How one experiment goes from the backlog through the review agents to a merged PR, with a few-minute demo:
+[docs/tutorial.md](docs/tutorial.md).
 
 ## Repository structure
 
