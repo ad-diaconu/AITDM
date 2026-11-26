@@ -32,8 +32,11 @@ __MACOSX/
 /outputs/deploy-*/
 
 # Claude Code: skills and review notes are personal (each person keeps their own), except the
-# shared /push skill; the agents in .claude/agents/ and .claude/experiment-review.md ARE shared
+# shared /push skill; the agents in .claude/agents/ and .claude/experiment-review.md ARE shared.
+# gh-backlog: the sync script and SKILL.md.example are shared; your own SKILL.md (a copy) is not
 /.claude/skills/*
 !/.claude/skills/push/
+!/.claude/skills/gh-backlog/
+/.claude/skills/gh-backlog/SKILL.md
 /.claude/reviews/
 /.claude/settings.local.json
