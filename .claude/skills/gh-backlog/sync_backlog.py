@@ -138,7 +138,7 @@ def main():
     print(f"{len(items)} backlog items to sync, {len(by_id)} already mirrored as issues")
 
     if a.apply:
-        existing = {l["name"] for l in gh("label", "list", "--repo", REPO, "--limit", "200", "--json", "name",
+        existing = {label["name"] for label in gh("label", "list", "--repo", REPO, "--limit", "200", "--json", "name",
                                           as_json=True)}
         for name, color in LABEL_COLORS.items():
             if name not in existing:
@@ -175,7 +175,7 @@ def main():
                 args = ["issue", "edit", str(number), "--repo", REPO, "--title", title, "--body-file", body_file]
                 for lab in labels:
                     args += ["--add-label", lab]
-                for lab in (l["name"] for l in iss["labels"]):
+                for lab in (label["name"] for label in iss["labels"]):
                     if lab in LABEL_COLORS and lab not in labels:
                         args += ["--remove-label", lab]
                 gh(*args)
